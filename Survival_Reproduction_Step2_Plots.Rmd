@@ -1,0 +1,1034 @@
+---
+title: "Reproduction & survival: Step 2- plots"
+output: html_document
+date: "2025-09-19"
+author: "Molly Caldwell"
+---
+
+```{r}
+library(glmmTMB)
+library(tidyverse)
+library(patchwork)
+library(cowplot)
+```
+
+```{r setup}
+setwd("~/OneDrive - University of Wyoming/Documents/USGS_AK_Caribou/")
+```
+
+# Load in data and models
+
+```{r}
+# survival data
+# early behavior data
+early_surv_data <- readRDS("./Code_Output/early_beh_surv_data.rds")
+
+# early behavior x condition models 
+early_surv_mod <- readRDS("./Code_Output/early_cond_surv_sig_models.rds")
+
+# late behavior data
+late_surv_data <- readRDS("./Code_Output/late_beh_surv_data.rds")
+
+# late behavior x condition models 
+late_surv_mod <- readRDS("./Code_Output/late_cond_surv_sig_models.rds")
+
+# reproduction data
+# early behavior data
+early_repro_data <- readRDS("./Code_Output/early_beh_part_data.rds")
+
+# early behavior x condition models 
+early_repro_mod <- readRDS("./Code_Output/early_cond_part_sig_models.rds")
+
+# late behavior data
+late_repro_data <- readRDS("./Code_Output/late_beh_part_data.rds")
+
+# late behavior x condition models 
+late_repro_mod <- readRDS("./Code_Output/late_cond_part_sig_models.rds")
+
+```
+
+# Model summaries
+
+```{r}
+# compile model summaries into a single dataframe
+# survival
+early_surv_summ <- vector(mode = "list", length = length(early_surv_mod))
+
+for(i in 1:length(early_surv_mod)){
+    df <- as.data.frame(summary(early_surv_mod[[i]])$coefficients$cond)
+    df$mod_num <- 1
+     df$Variable <- rownames(df)
+    rownames(df) <- NULL
+    df$Model <- names(early_surv_mod)[[i]]
+    
+    early_surv_summ[[i]] <- df
+  }
+
+early_surv_summ <- bind_rows(early_surv_summ)
+early_surv_summ <- early_surv_summ %>% rename(Pvalue = `Pr(>|z|)`)
+
+late_surv_summ <- vector(mode = "list", length = length(late_surv_mod))
+
+for(i in 1:length(late_surv_mod)){
+    df <- as.data.frame(summary(late_surv_mod[[i]])$coefficients$cond)
+    df$mod_num <- 1
+     df$Variable <- rownames(df)
+    rownames(df) <- NULL
+    df$Model <- names(late_surv_mod)[[i]]
+    
+    late_surv_summ[[i]]<- df
+  }
+
+
+late_surv_summ <- bind_rows(late_surv_summ)
+late_surv_summ <- late_surv_summ %>% rename(Pvalue = `Pr(>|z|)`)
+
+# reproduction
+early_repro_summ <- vector(mode = "list", length = length(early_repro_mod))
+
+for(i in 1:length(early_repro_mod)){
+    df <- as.data.frame(summary(early_repro_mod[[i]])$coefficients$cond)
+    df$mod_num <- 1
+     df$Variable <- rownames(df)
+    rownames(df) <- NULL
+    df$Model <- names(early_repro_mod)[[i]]
+    
+    early_repro_summ[[i]]<- df
+  }
+
+
+early_repro_summ <- bind_rows(early_repro_summ)
+early_repro_summ <- early_repro_summ %>% rename(Pvalue = `Pr(>|z|)`)
+
+late_repro_summ <- vector(mode = "list", length = length(late_repro_mod))
+
+for(i in 1:length(late_repro_mod)){
+    df <- as.data.frame(summary(late_repro_mod[[i]])$coefficients$cond)
+    df$mod_num <- 1
+     df$Variable <- rownames(df)
+    rownames(df) <- NULL
+    df$Model <- names(late_repro_mod)[[i]]
+    
+    late_repro_summ[[i]]<- df
+  }
+
+
+late_repro_summ <- bind_rows(late_repro_summ)
+late_repro_summ <- late_repro_summ %>% rename(Pvalue = `Pr(>|z|)`)
+```
+
+```{r}
+# look at results with p-values < 0.05
+early_surv_sig <- early_surv_summ %>% 
+  filter(Pvalue < 0.05) %>% 
+  filter(!str_detect(Variable, "Intercept")) %>% 
+  filter(!(Variable %in% c("avg_biom_herd", "avg_mosq_herd", "avg_dn_herd")))
+
+early_repro_sig <- early_repro_summ %>% 
+  filter(Pvalue < 0.05) %>% 
+  filter(!str_detect(Variable, "Intercept")) %>% 
+  filter(!(Variable %in% c("avg_biom_herd", "avg_mosq_herd", "avg_dn_herd")))
+
+late_surv_sig <- late_surv_summ %>% 
+  filter(Pvalue < 0.05) %>% 
+  filter(!str_detect(Variable, "Intercept")) %>% 
+  filter(!(Variable %in% c("avg_biom_herd", "avg_fly_herd", "avg_de_herd")))
+
+late_repro_sig <- late_repro_summ %>% 
+  filter(Pvalue < 0.05) %>% 
+  filter(!str_detect(Variable, "Intercept")) %>% 
+  filter(!(Variable %in% c("avg_biom_herd", "avg_fly_herd", "avg_de_herd")))
+```
+
+# Generate predictions from models
+
+```{r}
+# function to unscale data (used in prediction function)
+unscale <- function(x_scaled, var_unscaled) {
+  (x_scaled * sd(var_unscaled)) + mean(var_unscaled)
+}
+
+# function to generate predictions
+generate_predict <- function(model, data){
+  
+  form <- as.character(formula(model)) # first, pull formula from model
+  
+  # then, pull predictors
+  predictors <- str_remove(form[[3]], "\\(1 \\| animal_id\\) \\+ ")
+  predictors <- str_split_1(predictors, " \\* | \\+ |\\:")
+  predictors <- unique(predictors)
+  
+  # remove quadratic from string if present
+  for(j in 1:length(predictors)){
+    if(str_detect(predictors[j], "I")){
+     predictors[j] <- str_remove_all(predictors[j], "I\\(|\\^2\\)")
+    }
+  }
+  
+  # Identify annual conditions & behavior predictors to generate interaction predictions
+  cond_vars <- predictors[str_detect(predictors, "herd")]
+  beh_vars <- predictors[!str_detect(predictors, "herd|Calf")][[1]]
+  other_vars <- predictors[-which(predictors %in% c(cond_vars, beh_vars))]
+  
+  # now, create datasets per behavior predictor, holding condition predictor at minimum or maximum
+  if(length(other_vars) > 0){
+        means <- colMeans(data[, c(beh_vars, cond_vars, other_vars)],
+                          na.rm = TRUE)
+  }else{
+    means <- colMeans(data[, c(beh_vars, cond_vars)], na.rm = TRUE)
+  }
+
+  
+    # Get min, max, and mean for condition vars
+    cond_mins <- sapply(data[, cond_vars, drop = FALSE], min, na.rm = TRUE)
+    cond_maxs <- sapply(data[, cond_vars, drop = FALSE], max, na.rm = TRUE)
+    cond_means <- sapply(data[, cond_vars, drop = FALSE], mean, na.rm = TRUE)
+    
+    # Get sequences for behavior vars
+    seq_list <- lapply(data[, beh_vars, drop = FALSE], function(x) {
+      seq(min(x, na.rm = TRUE), max(x, na.rm = TRUE), length.out = 10)
+    })
+    
+    # Create list to store datasets
+    data_pred <- list()
+    
+      var_name <- beh_vars
+      
+      # Start from means for all variables
+      base_vals <- as.list(means)
+      
+      # --- Case 1: 
+      ## condition vars 1 = minimums
+      grid_min <- base_vals
+      grid_min[cond_vars[[1]]] <- cond_mins[[1]]
+      grid_min[[var_name]] <- seq_list[[var_name]]
+      df_min <- expand.grid(grid_min)
+      df_min$condition_level <- "min"
+      data_pred[[paste0(var_name, "_cond_min ", cond_vars[[1]])]] <- df_min
+      
+      ## condition vars 2 = minimums
+      grid_min <- base_vals
+      grid_min[cond_vars[[2]]] <- cond_mins[[2]]
+      grid_min[[var_name]] <- seq_list[[var_name]]
+      df_min <- expand.grid(grid_min)
+      df_min$condition_level <- "min"
+      data_pred[[paste0(var_name, "_cond_min ", cond_vars[[2]])]] <- df_min
+      
+      # --- Case 2: 
+      ## condition vars 1 = maximums ---
+      grid_max <- base_vals
+      grid_max[cond_vars[[1]]] <- cond_maxs[[1]]
+      grid_max[[var_name]] <- seq_list[[var_name]]
+      df_max <- expand.grid(grid_max)
+      df_max$condition_level <- "max"
+      data_pred[[paste0(var_name, "_cond_max ", cond_vars[[1]])]] <- df_max
+      
+      ## condition vars 2 = maximums ---
+      grid_max <- base_vals
+      grid_max[cond_vars[[2]]] <- cond_maxs[[2]]
+      grid_max[[var_name]] <- seq_list[[var_name]]
+      df_max <- expand.grid(grid_max)
+      df_max$condition_level <- "max"
+      data_pred[[paste0(var_name, "_cond_max ", cond_vars[[2]])]] <- df_max
+      
+      # --- Case 3: 
+      ## condition vars 1 = means
+      grid_mean <- base_vals
+      grid_mean[cond_vars[[1]]] <- cond_means[[1]]
+      grid_mean[[var_name]] <- seq_list[[var_name]]
+      df_mean <- expand.grid(grid_mean)
+      df_mean$condition_level <- "mean"
+      data_pred[[paste0(var_name, "_cond_mean ", cond_vars[[1]])]] <- df_mean
+      
+      ## condition vars 2 = means
+      grid_mean <- base_vals
+      grid_mean[cond_vars[[2]]] <- cond_means[[2]]
+      grid_mean[[var_name]] <- seq_list[[var_name]]
+      df_mean <- expand.grid(grid_mean)
+      df_mean$condition_level <- "mean"
+      data_pred[[paste0(var_name, "_cond_mean ", cond_vars[[2]])]] <- df_mean
+  
+  
+  ## then, generate model predictions for the response per each predictor dataset 
+  temp <- list() 
+  for(k in 1:length(data_pred)){ 
+    pred <- predict(model, newdata = data_pred[[k]], 
+                    type = "response", se.fit = TRUE, re.form = NA) 
+    temp[[k]] <- data_pred[[k]] 
+    temp[[k]]$fit <- pred$fit 
+    temp[[k]]$se.fit <- pred$se.fit 
+    
+    cond_int <- str_split_i(names(data_pred)[[k]], " ", 2)
+    
+    temp[[k]]$cond_int <- cond_int
+    
+    cond_control <- cond_vars[which(cond_vars != cond_int)]
+    temp[[k]]$cond_control <- cond_control
+  } 
+  
+  temp <- bind_rows(temp)
+  
+  # unscale behavior
+  temp[,paste0(beh_vars, "_unscaled")] <- map_dbl(temp[,beh_vars],
+                                              ~ unscale(x_scaled = .,
+                      var_unscaled = data[[paste0(beh_vars, "_unscaled")]]))
+
+  
+  # add identifying variables & rename variables
+  temp <- temp %>% 
+    mutate(beh_var = beh_vars,
+           condition_level = case_when(
+             condition_level == "max" &  str_detect(cond_int, "biom") ~
+               "max_quantity",
+             condition_level == "min" &  str_detect(cond_int, "biom") ~
+               "min_quantity",
+             condition_level == "mean" &  str_detect(cond_int, "biom") ~
+               "mean_quantity",
+             condition_level == "max" &  str_detect(cond_int, "de|dn") ~
+               "max_quality",
+             condition_level == "min" &  str_detect(cond_int, "de|dn") ~
+               "min_quality",
+             condition_level == "mean" &  str_detect(cond_int, "de|dn") ~
+               "mean_quality",
+             condition_level == "max" &  str_detect(cond_int, "mosq|fly") ~
+               "max_insect",
+             condition_level == "min" &  str_detect(cond_int, "mosq|fly") ~
+               "min_insect",
+             condition_level == "mean" &  str_detect(cond_int, "mosq|fly") ~
+               "mean_insect"),
+           beh_var = case_when(
+             beh_var == "avg_dist_m" ~ "Avg. displacement (m)",
+              beh_var == "avg_sinuosity" ~ "Avg. sinuosity",
+              beh_var == "avg_biom" ~ "Avg. biomass use",
+              beh_var == "avg_de" ~ "Avg. dig. energy use",
+             beh_var == "avg_dn" ~ "Avg. dig. nitrogen use",
+              beh_var == "HR_area_km2" ~ "Seasonal range area (km^2)",
+              beh_var == "centroid_x" ~ "Seasonal range longitude",
+              beh_var == "centroid_y" ~ "Seasonal range latitude",
+              beh_var == "resource_vol" ~ "Forage use breadth",
+              beh_var == "move_vol" ~ "Movement breadth"),
+           cond_type = case_when(
+  str_detect(cond_int, "biom") ~ "Forage quantity",
+  str_detect(cond_int, "mosq") ~ "Insect indices",
+  str_detect(cond_int, "fly") ~ "Insect indices",
+  str_detect(cond_int, "de") ~ "Forage quality",
+  str_detect(cond_int, "dn") ~ "Forage quality"
+)) %>% 
+    rename(beh_value = as.symbol(beh_vars),
+           beh_value_unscaled = as.symbol(paste0(beh_vars, "_unscaled")))
+  
+  # pivot longer, so predictor values are in same column
+  temp <- pivot_longer(temp, cols = 2:3, 
+                       values_to = "predictor_vals",
+                       names_to = "predictor_names")
+  
+    return(temp)
+}
+
+```
+
+```{r}
+# run prediction function over models
+early_surv_pred <- map_df(early_surv_mod, 
+                         ~ generate_predict(., data = early_surv_data))
+
+early_repro_pred <- map_df(early_repro_mod, 
+                         ~ generate_predict(., data = early_repro_data))
+
+late_surv_pred <- map_df(late_surv_mod, 
+                         ~ generate_predict(., data = late_surv_data))
+
+late_repro_pred <- map_df(late_repro_mod, 
+                         ~ generate_predict(., data = late_repro_data))
+```
+
+# Plots
+
+```{r}
+## set colors for condition levels
+cols <- c("mean_quantity" = "#935419",
+          "mean_quality" = "#3b5840",
+          "mean_insect" = "#61335a",
+          "max_quantity" = "#935419",
+          "max_quality" = "#3b5840",
+          "max_insect" = "#61335a",
+           "min_quantity" = "#d4a579",
+          "min_quality" = "#98b29d",
+          "min_insect" = "#b992b3")
+```
+
+```{r}
+# extract legend with all colors & export as image
+p <- ggplot(early_surv_pred) +
+  geom_line(aes(x = beh_value, y = fit, 
+                 color = condition_level), linewidth = 2) +
+  geom_ribbon(aes(x = beh_value,
+                    ymin = fit - se.fit, 
+                    ymax = fit + se.fit,
+                    fill = condition_level), 
+                alpha = 0.2) +
+  scale_color_manual(name = "",
+                     values = cols,
+                     labels = c(
+                "max_quantity" = "High forage quantity year",
+               "min_quantity" = "Low forage quantity year",
+                "max_quality" = "High forage quality year",
+               "min_quality" = "Low forage quality year",
+               "max_insect" = "High insect year",
+               "min_insect" = "Low insect year"),
+    breaks = c("min_quantity", "max_quantity", 
+               "min_quality", "max_quality", 
+               "min_insect", "max_insect")) +
+  scale_fill_manual(name = "",
+                     values = cols,
+                     labels = c(
+                "max_quantity" = "High forage quantity year",
+               "min_quantity" = "Low forage quantity year",
+                "max_quality" = "High forage quality year",
+               "min_quality" = "Low forage quality year",
+               "max_insect" = "High insect year",
+               "min_insect" = "Low insect year"),
+    breaks = c("min_quantity", "max_quantity", 
+               "min_quality", "max_quality", 
+               "min_insect", "max_insect")) +
+  theme(legend.text = element_text(size = 8))
+
+leg <- get_legend(
+  p + theme(legend.position = "bottom")
+)
+
+legend_plot <- ggdraw(leg)
+
+ggsave("./Figures/survrepro_legend.png", legend_plot, width = 6, height = 1, units = "in")
+```
+
+
+## Space use
+
+```{r}
+# early summer: survival - HR area * biomass, repro - HR area * mosq
+early_surv_HR <- early_surv_pred %>% 
+  filter(beh_var == "Seasonal range area (km^2)" & cond_int == "avg_biom_herd" & predictor_names == "avg_biom_herd" & condition_level %in% c("max_quantity", "min_quantity"))
+
+early_surv_HR_plot <- ggplot(early_surv_HR) +
+  geom_line(aes(x = beh_value_unscaled, y = fit, color = condition_level)) +
+    geom_ribbon(aes(x = beh_value_unscaled,
+                    ymin = fit - se.fit, 
+                    ymax = fit + se.fit,
+                    fill = condition_level), 
+                alpha = 0.2) +
+   scale_color_manual(values = cols) +
+  scale_fill_manual(values = cols)  +
+    guides(color = guide_legend(nrow = 2, byrow = TRUE),
+    fill  = guide_legend(nrow = 2, byrow = TRUE)) +
+  labs(y = "Annual survival probability",
+       x = expression("Seasonal range area (km"^2*")"),
+       title = "A. Early summer") +
+  scale_y_continuous(breaks = c(0, 0.5, 1)) +
+    theme_classic() +
+  theme(text = element_text(size = 8),
+        legend.position = "none",
+        legend.text = element_text(size = 8)) 
+
+early_repro_HR <- early_repro_pred %>% 
+  filter(beh_var == "Seasonal range area (km^2)" & cond_int == "avg_mosq_herd" & predictor_names == "avg_mosq_herd" & condition_level %in% c("max_insect", "min_insect"))
+
+early_repro_HR_plot <- ggplot(early_repro_HR) +
+  geom_line(aes(x = beh_value_unscaled, y = fit, color = condition_level)) +
+    geom_ribbon(aes(x = beh_value_unscaled,
+                    ymin = fit - se.fit, 
+                    ymax = fit + se.fit,
+                    fill = condition_level), 
+                alpha = 0.2) +
+   scale_color_manual(values = cols) +
+  scale_fill_manual(values = cols)  +
+    guides(color = guide_legend(nrow = 2, byrow = TRUE),
+    fill  = guide_legend(nrow = 2, byrow = TRUE)) +
+  labs(y = "Annual calving probability",
+       x = expression("Seasonal range area (km"^2*")")) +
+  scale_y_continuous(breaks = c(0, 0.5, 1)) +
+    theme_classic() +
+  theme(text = element_text(size = 8),
+        legend.position = "none",
+        legend.text = element_text(size = 8))
+  
+# late summer: survival - HR area, repro - HR area
+late_surv_HR <- late_surv_pred %>% 
+  filter(beh_var == "Seasonal range area (km^2)" & cond_int == "avg_fly_herd" & predictor_names == "avg_fly_herd" & condition_level %in% c("max_insect", "min_insect"))
+
+late_surv_HR <- late_surv_HR[1:20,]
+
+late_surv_HR_de <- late_surv_pred %>% 
+  filter(beh_var == "Seasonal range area (km^2)" & cond_int == "avg_de_herd" & predictor_names == "avg_de_herd" & condition_level %in% c("max_quality", "min_quality"))
+
+late_surv_HR <- bind_rows(late_surv_HR, late_surv_HR_de)
+
+late_surv_HR_plot <- ggplot(late_surv_HR) +
+  geom_line(aes(x = beh_value_unscaled, y = fit, color = condition_level)) +
+    geom_ribbon(aes(x = beh_value_unscaled,
+                    ymin = fit - se.fit, 
+                    ymax = fit + se.fit,
+                    fill = condition_level), 
+                alpha = 0.2) +
+   scale_color_manual(values = cols) +
+  scale_fill_manual(values = cols) +
+  labs(y = "Annual survival probability",
+       x = expression("Seasonal range area (km"^2*")"),
+       title = "B. Late summer") +
+    guides(color = guide_legend(nrow = 2, byrow = TRUE),
+    fill  = guide_legend(nrow = 2, byrow = TRUE)) +
+  scale_y_continuous(breaks = c(0, 0.5, 1)) +
+    theme_classic() +
+  theme(text = element_text(size = 8),
+        legend.position = "none",
+        legend.text = element_text(size = 8))
+
+late_repro_HR <- late_repro_pred %>% 
+  filter(beh_var == "Seasonal range area (km^2)" & cond_int == "avg_fly_herd" & predictor_names == "avg_fly_herd" & condition_level %in% c("max_insect", "min_insect"))
+
+late_repro_HR <- late_repro_HR[1:20,]
+
+late_repro_HR_de <- late_repro_pred %>% 
+  filter(beh_var == "Seasonal range area (km^2)" & cond_int == "avg_de_herd" & predictor_names == "avg_de_herd" & condition_level %in% c("max_quality", "min_quality"))
+
+late_repro_HR <- bind_rows(late_repro_HR, late_repro_HR_de)
+
+late_repro_HR_plot <- ggplot(late_repro_HR) +
+  geom_line(aes(x = beh_value_unscaled, y = fit, color = condition_level)) +
+    geom_ribbon(aes(x = beh_value_unscaled,
+                    ymin = fit - se.fit, 
+                    ymax = fit + se.fit,
+                    fill = condition_level), 
+                alpha = 0.2) +
+   scale_color_manual(values = cols) +
+  scale_fill_manual(values = cols) +
+  labs(y = "Annual calving probability",
+       x = expression("Seasonal range area (km"^2*")")) +
+    guides(color = guide_legend(nrow = 2, byrow = TRUE),
+    fill  = guide_legend(nrow = 2, byrow = TRUE)) +
+  scale_y_continuous(breaks = c(0, 0.5, 1)) +
+    theme_classic() +
+  theme(text = element_text(size = 8),
+        legend.position = "none",
+        legend.text = element_text(size = 8)) 
+
+space_plot <- ((early_surv_HR_plot + early_repro_HR_plot) + plot_layout(axes = "collect_x") |
+  (late_surv_HR_plot + late_repro_HR_plot) + 
+  plot_layout(axes = "collect_x")) / plot_spacer() + plot_layout(heights = c(1, 0.25))
+
+
+ggsave("./Figures/space_use_survrepro_plot.png", plot = space_plot,
+       width = 6.5, height = 3, units = "in")
+```
+
+## Movement metrics
+
+```{r}
+# early summer: survival- displacement * mosq, move breadth
+early_displ <- early_surv_pred %>% 
+  filter(beh_var == "Avg. displacement (m)" & cond_int == "avg_mosq_herd" & predictor_names == "avg_mosq_herd" & condition_level %in% c("max_insect", "min_insect") & cond_control == "avg_dn_herd")
+
+early_displ_plot <- ggplot(early_displ) +
+  geom_line(aes(x = beh_value_unscaled/1000, y = fit, color = condition_level)) +
+    geom_ribbon(aes(x = beh_value_unscaled/1000,
+                    ymin = fit - se.fit, 
+                    ymax = fit + se.fit,
+                    fill = condition_level), 
+                alpha = 0.2) +
+   scale_color_manual(values = cols) +
+  scale_fill_manual(values = cols)  +
+  guides(color = guide_legend(nrow = 2, byrow = TRUE),
+    fill  = guide_legend(nrow = 2, byrow = TRUE)) +
+  labs(y = "",
+       x = "Daily displacement (km)",
+       title = "A. Early summer") +
+  scale_y_continuous(breaks = c(0, 0.5, 1)) +
+    theme_classic() +
+  theme(text = element_text(size = 8),
+        legend.position = "none",
+        legend.text = element_text(size = 8)) 
+
+early_mb <- early_surv_pred %>% 
+  filter(beh_var == "Movement breadth" & cond_int == "avg_mosq_herd" & predictor_names == "avg_mosq_herd" & condition_level %in% c("max_insect", "min_insect"))
+
+early_mb_dn <- early_surv_pred %>% 
+  filter(beh_var == "Movement breadth" & cond_int == "avg_dn_herd" & predictor_names == "avg_dn_herd" & condition_level %in% c("max_quality", "min_quality"))
+
+early_mb <- bind_rows(early_mb, early_mb_dn)
+
+early_mb_plot <- ggplot(early_mb) +
+  geom_line(aes(x = beh_value_unscaled, y = fit, color = condition_level)) +
+    geom_ribbon(aes(x = beh_value_unscaled,
+                    ymin = fit - se.fit, 
+                    ymax = fit + se.fit,
+                    fill = condition_level), 
+                alpha = 0.2) +
+   scale_color_manual(values = cols) +
+  scale_fill_manual(values = cols) +
+  labs(y = "",
+       x = "Movement breadth") +
+  scale_y_continuous(breaks = c(0, 0.5, 1)) +
+    theme_classic() +
+  theme(text = element_text(size = 8),
+        legend.position = "none",
+        legend.text = element_text(size = 8)) 
+  
+# late summer: survival- sinuosity, survival - displacement, survival - move breadth * biom, survival - move breadth * de, repro - sinuosity * de, repro - move breadth
+late_surv_displ <- late_surv_pred %>% 
+  filter(beh_var == "Avg. displacement (m)" & cond_int == "avg_biom_herd" & predictor_names == "avg_biom_herd" & condition_level %in% c("max_quantity", "min_quantity"))
+
+late_surv_displ_de <- late_surv_pred %>% 
+  filter(beh_var == "Avg. displacement (m)" & cond_int == "avg_de_herd" & predictor_names == "avg_de_herd" & condition_level %in% c("max_quality", "min_quality"))
+
+late_surv_displ <-  bind_rows(late_surv_displ, late_surv_displ_de)
+
+late_surv_displ_plot <- ggplot(late_surv_displ) +
+  geom_line(aes(x = beh_value_unscaled/1000, y = fit, color = condition_level)) +
+    geom_ribbon(aes(x = beh_value_unscaled/1000,
+                    ymin = fit - se.fit, 
+                    ymax = fit + se.fit,
+                    fill = condition_level), 
+                alpha = 0.2) +
+   scale_color_manual(values = cols) +
+  scale_fill_manual(values = cols)  +
+  guides(color = guide_legend(nrow = 2, byrow = TRUE),
+    fill  = guide_legend(nrow = 2, byrow = TRUE)) +
+  labs(y = "Annual survival probability",
+       x = "Daily displacement (km)",
+       title = "B. Late summer") +
+  scale_y_continuous(breaks = c(0, 0.5, 1)) +
+    theme_classic() +
+  theme(text = element_text(size = 8),
+        legend.position = "none",
+        legend.text = element_text(size = 8))
+
+late_surv_sin_de <- late_surv_pred %>% 
+  filter(beh_var == "Avg. sinuosity" & cond_int == "avg_de_herd" & predictor_names == "avg_de_herd" & condition_level %in% c("max_quality", "min_quality"))
+
+late_surv_sin_plot <- ggplot(late_surv_sin_de) +
+  geom_line(aes(x = beh_value_unscaled, y = fit, color = condition_level)) +
+    geom_ribbon(aes(x = beh_value_unscaled,
+                    ymin = fit - se.fit, 
+                    ymax = fit + se.fit,
+                    fill = condition_level), 
+                alpha = 0.2) +
+   scale_color_manual(values = cols) +
+  scale_fill_manual(values = cols)  +
+  guides(color = guide_legend(nrow = 2, byrow = TRUE),
+    fill  = guide_legend(nrow = 2, byrow = TRUE)) +
+  labs(y = "Annual survival probability",
+       x = "Daily sinuosity") +
+  scale_y_continuous(breaks = c(0, 0.5, 1)) +
+    theme_classic() +
+  theme(text = element_text(size = 8),
+        legend.position = "none",
+        legend.text = element_text(size = 8))
+
+late_surv_mb_biom <- late_surv_pred %>% 
+  filter(beh_var == "Movement breadth" & cond_int == "avg_biom_herd" & predictor_names == "avg_biom_herd" & condition_level %in% c("min_quantity", "mean_quantity"))
+
+late_surv_mb_de <- late_surv_pred %>% 
+  filter(beh_var == "Movement breadth" & cond_int == "avg_de_herd" & predictor_names == "avg_de_herd" & condition_level %in% c("min_quality", "mean_quality"))
+
+late_surv_mb <- bind_rows(late_surv_mb_biom, late_surv_mb_de)
+
+late_surv_mb_plot <- ggplot(late_surv_mb) +
+  geom_line(aes(x = beh_value_unscaled, y = fit, color = condition_level)) +
+    geom_ribbon(aes(x = beh_value_unscaled,
+                    ymin = fit - se.fit, 
+                    ymax = fit + se.fit,
+                    fill = condition_level), 
+                alpha = 0.2) +
+   scale_color_manual(values = cols) +
+  scale_fill_manual(values = cols)  +
+  guides(color = guide_legend(nrow = 2, byrow = TRUE),
+    fill  = guide_legend(nrow = 2, byrow = TRUE)) +
+  labs(y = "Annual survival probability",
+       x = "Movement breadth") +
+  scale_y_continuous(breaks = c(0, 0.5, 1)) +
+    theme_classic() +
+  theme(text = element_text(size = 8),
+        legend.position = "none",
+        legend.text = element_text(size = 8))
+
+late_repro_sin <- late_surv_pred %>% 
+  filter(beh_var == "Avg. sinuosity" & cond_int == "avg_de_herd" & predictor_names == "avg_de_herd" & condition_level %in% c("max_quality", "min_quality"))
+
+late_repro_sin_plot <- ggplot(late_repro_sin) +
+  geom_line(aes(x = beh_value_unscaled, y = fit, color = condition_level)) +
+    geom_ribbon(aes(x = beh_value_unscaled,
+                    ymin = fit - se.fit, 
+                    ymax = fit + se.fit,
+                    fill = condition_level), 
+                alpha = 0.2) +
+   scale_color_manual(values = cols) +
+  scale_fill_manual(values = cols)  +
+  guides(color = guide_legend(nrow = 2, byrow = TRUE),
+    fill  = guide_legend(nrow = 2, byrow = TRUE)) +
+  labs(y = "Annual calving probability",
+       x = "Daily sinuosity") +
+  scale_y_continuous(breaks = c(0, 0.5, 1)) +
+    theme_classic() +
+  theme(text = element_text(size = 8),
+        legend.position = "none",
+        legend.text = element_text(size = 8))
+
+late_repro_mb <- late_surv_pred %>% 
+  filter(beh_var == "Movement breadth" & cond_int == "avg_biom_herd" & predictor_names == "avg_biom_herd" & condition_level %in% c("min_quantity", "mean_quantity"))
+
+late_repro_mb_de <- late_surv_pred %>% 
+  filter(beh_var == "Movement breadth" & cond_int == "avg_de_herd" & predictor_names == "avg_de_herd" & condition_level %in% c("min_quality", "mean_quality"))
+
+late_repro_mb <- bind_rows(late_repro_mb, late_repro_mb_de)
+
+late_repro_mb_plot <- ggplot(late_repro_mb) +
+  geom_line(aes(x = beh_value_unscaled, y = fit, color = condition_level)) +
+    geom_ribbon(aes(x = beh_value_unscaled,
+                    ymin = fit - se.fit, 
+                    ymax = fit + se.fit,
+                    fill = condition_level), 
+                alpha = 0.2) +
+   scale_color_manual(values = cols) +
+  scale_fill_manual(values = cols)  +
+  guides(color = guide_legend(nrow = 2, byrow = TRUE),
+    fill  = guide_legend(nrow = 2, byrow = TRUE)) +
+  labs(y = "",
+       x = "Movement breadth") +
+  scale_y_continuous(breaks = c(0, 0.5, 1)) +
+    theme_classic() +
+  theme(text = element_text(size = 8),
+        legend.position = "none",
+        legend.text = element_text(size = 8))
+
+```
+
+```{r}
+# empty plots for non-significant effects
+early_sin_plot <- ggplot(data.frame(x = 0, y = 0), aes(x, y)) +
+  coord_cartesian(xlim = c(0, 1), ylim = c(0, 1)) +
+  labs(x = "Daily sinuosity", y = "Annual survival probability") +
+  scale_y_continuous(breaks = c(0, 0.5, 1)) +
+  theme_classic() +
+  geom_text(aes(x = 0.5, y = 0.5), label = "No effect", size = 5) +
+  theme(
+    text = element_text(size = 8),
+    legend.position = "none"
+  )
+
+late_repro_disp_plot <- ggplot(data.frame(x = 0, y = 0), aes(x, y)) +
+  coord_cartesian(xlim = c(0, 20), ylim = c(0, 1)) +
+  labs(x = "Daily displacement (km)", y = "") +
+  scale_y_continuous(breaks = c(0, 0.5, 1)) +
+  theme_classic() +
+  geom_text(aes(x = 10, y = 0.5), label = "No effect", size = 5) +
+  theme(
+    text = element_text(size = 8),
+    legend.position = "none"
+  )
+# combine and save plots
+
+left_col <- (early_displ_plot / early_sin_plot / early_mb_plot) 
+
+middle_col <- (late_surv_displ_plot / late_surv_sin_plot / late_surv_mb_plot) +
+  plot_layout(axes = "collect_y") 
+
+right_col <- (late_repro_disp_plot/ late_repro_sin_plot / late_repro_mb_plot) +
+  plot_layout(axes = "collect_y")
+
+move_plot <- (left_col | middle_col | right_col) / plot_spacer() + 
+  plot_layout(heights = c(1, 0.1))
+
+
+ggsave("./Figures/move_survrepro_plot.png", plot = move_plot,
+       width = 6.1, height = 6, units = "in")
+```
+
+## Forage use
+
+```{r}
+# early summer: survival- avg de, survival - avg biom ^2, repro - avg biom * mosq, repro - resource breadth * dn
+early_de <- early_surv_pred %>% 
+  filter(beh_var == "Avg. dig. energy use" & cond_int == "avg_biom_herd" & predictor_names == "avg_biom_herd" & condition_level %in% c("max_quantity", "min_quantity"))
+
+early_de_plot <- ggplot(early_de) +
+  geom_line(aes(x = beh_value_unscaled, y = fit, color = condition_level)) +
+    geom_ribbon(aes(x = beh_value_unscaled,
+                    ymin = fit - se.fit, 
+                    ymax = fit + se.fit,
+                    fill = condition_level), 
+                alpha = 0.2) +
+   scale_color_manual(values = cols) +
+  scale_fill_manual(values = cols)  +
+  guides(color = guide_legend(nrow = 2, byrow = TRUE),
+    fill  = guide_legend(nrow = 2, byrow = TRUE)) +
+  labs(y = "",
+       x = "Dig. energy use (kJ/g)",
+       title = "A. Early summer") +
+  scale_y_continuous(breaks = c(0, 0.5, 1)) +
+    theme_classic() +
+  theme(text = element_text(size = 8),
+        legend.position = "none",
+        legend.text = element_text(size = 8)) 
+
+early_biom2 <- early_surv_pred %>% 
+  filter(beh_var == "Avg. biomass use" & cond_int == "avg_mosq_herd" & predictor_names == "avg_mosq_herd" & condition_level %in% c("max_insect", "min_insect"))
+
+
+early_biom2_plot <- ggplot(early_biom2) +
+  geom_line(aes(x = beh_value_unscaled, y = fit, color = condition_level)) +
+    geom_ribbon(aes(x = beh_value_unscaled,
+                    ymin = fit - se.fit, 
+                    ymax = fit + se.fit,
+                    fill = condition_level), 
+                alpha = 0.2) +
+   scale_color_manual(values = cols) +
+  scale_fill_manual(values = cols)  +
+  guides(color = guide_legend(nrow = 2, byrow = TRUE),
+    fill  = guide_legend(nrow = 2, byrow = TRUE)) +
+  labs(y = "Annual survival probability",
+       x = expression("Forage biomass use (g/m"^2*")")) +
+  scale_y_continuous(breaks = c(0, 0.5, 1)) +
+    theme_classic() +
+  theme(text = element_text(size = 8),
+        legend.position = "none",
+        legend.text = element_text(size = 8)) 
+
+early_biom_repro <- early_repro_pred %>% 
+  filter(beh_var == "Avg. biomass use" & cond_int == "avg_mosq_herd" & predictor_names == "avg_mosq_herd" & condition_level %in% c("mean_insect", "min_insect"))
+
+early_biom_repro <- early_biom_repro[1:20,]
+
+early_biom_repro_plot <- ggplot(early_biom_repro) +
+  geom_line(aes(x = beh_value_unscaled, y = fit, color = condition_level)) +
+    geom_ribbon(aes(x = beh_value_unscaled,
+                    ymin = fit - se.fit, 
+                    ymax = fit + se.fit,
+                    fill = condition_level), 
+                alpha = 0.2) +
+   scale_color_manual(values = cols) +
+  scale_fill_manual(values = cols)  +
+  guides(color = guide_legend(nrow = 2, byrow = TRUE),
+    fill  = guide_legend(nrow = 2, byrow = TRUE)) +
+  labs(y = "Annual calving probability",
+       x = expression("Forage biomass use (g/m"^2*")")) +
+  scale_y_continuous(breaks = c(0, 0.5, 1)) +
+    theme_classic() +
+  theme(text = element_text(size = 8),
+        legend.position = "none",
+        legend.text = element_text(size = 8)) 
+
+early_rb_repro <- early_repro_pred %>% 
+  filter(beh_var == "Forage use breadth" & cond_int == "avg_dn_herd" & predictor_names == "avg_dn_herd" & condition_level %in% c("max_quality", "min_quality"))
+
+early_rb_repro_plot <- ggplot(early_rb_repro) +
+  geom_line(aes(x = beh_value_unscaled, y = fit, color = condition_level)) +
+    geom_ribbon(aes(x = beh_value_unscaled,
+                    ymin = fit - se.fit, 
+                    ymax = fit + se.fit,
+                    fill = condition_level), 
+                alpha = 0.2) +
+   scale_color_manual(values = cols) +
+  scale_fill_manual(values = cols)  +
+  guides(color = guide_legend(nrow = 2, byrow = TRUE),
+    fill  = guide_legend(nrow = 2, byrow = TRUE)) +
+  labs(y = "",
+       x = "Forage use breadth") +
+  scale_y_continuous(breaks = c(0, 0.5, 1)) +
+    theme_classic() +
+  theme(text = element_text(size = 8),
+        legend.position = "none",
+        legend.text = element_text(size = 8)) 
+
+# late summer: survival - forage breadth * biom, repro - avg dn * fly, repro - avg biom * fly, avg biom * biom, forage breadth * de, forage breadth * biom
+late_fb_surv <- late_surv_pred %>% 
+  filter(beh_var == "Forage use breadth" & cond_int == "avg_biom_herd" & predictor_names == "avg_biom_herd" & condition_level %in% c("max_quantity", "min_quantity"))
+
+late_fb_surv_plot <- ggplot(late_fb_surv) +
+  geom_line(aes(x = beh_value_unscaled, y = fit, color = condition_level)) +
+    geom_ribbon(aes(x = beh_value_unscaled,
+                    ymin = fit - se.fit, 
+                    ymax = fit + se.fit,
+                    fill = condition_level), 
+                alpha = 0.2) +
+   scale_color_manual(values = cols) +
+  scale_fill_manual(values = cols)  +
+  guides(color = guide_legend(nrow = 2, byrow = TRUE),
+    fill  = guide_legend(nrow = 2, byrow = TRUE)) +
+  labs(y = "",
+       x = "Forage use breadth") +
+  scale_y_continuous(breaks = c(0, 0.5, 1)) +
+    theme_classic() +
+  theme(text = element_text(size = 8),
+        legend.position = "none",
+        legend.text = element_text(size = 8)) 
+
+late_dn <- late_repro_pred %>% 
+  filter(beh_var == "Avg. dig. nitrogen use" & cond_int == "avg_fly_herd" & predictor_names == "avg_fly_herd" & condition_level %in% c("max_insect", "min_insect"))
+
+late_dn <- late_dn[1:20,]
+
+late_dn_plot <- ggplot(late_dn) +
+  geom_line(aes(x = beh_value_unscaled, y = fit, color = condition_level)) +
+    geom_ribbon(aes(x = beh_value_unscaled,
+                    ymin = fit - se.fit, 
+                    ymax = fit + se.fit,
+                    fill = condition_level), 
+                alpha = 0.2) +
+   scale_color_manual(values = cols) +
+  scale_fill_manual(values = cols)  +
+  guides(color = guide_legend(nrow = 2, byrow = TRUE),
+    fill  = guide_legend(nrow = 2, byrow = TRUE)) +
+  labs(y = "Annual calving probability",
+       x = "Dig. nitrogen use (g/100g)") +
+  scale_y_continuous(breaks = c(0, 0.5, 1)) +
+    theme_classic() +
+  theme(text = element_text(size = 8),
+        legend.position = "none",
+        legend.text = element_text(size = 8))
+
+late_biom_fly_repro <- late_repro_pred %>% 
+  filter(beh_var == "Avg. biomass use" & cond_int == "avg_fly_herd" & predictor_names == "avg_fly_herd" & condition_level %in% c("max_insect", "min_insect"))
+
+late_biom_fly_repro <- late_biom_fly_repro[1:20,]
+
+late_biom_fly_repro_plot <- ggplot(late_biom_fly_repro) +
+  geom_line(aes(x = beh_value_unscaled, y = fit, color = condition_level)) +
+    geom_ribbon(aes(x = beh_value_unscaled,
+                    ymin = fit - se.fit, 
+                    ymax = fit + se.fit,
+                    fill = condition_level), 
+                alpha = 0.2) +
+   scale_color_manual(values = cols) +
+  scale_fill_manual(values = cols)  +
+  guides(color = guide_legend(nrow = 2, byrow = TRUE),
+    fill  = guide_legend(nrow = 2, byrow = TRUE)) +
+  labs(y = "Annual calving probability",
+       x = expression("Forage biomass use (g/m"^2*")")) +
+  scale_y_continuous(breaks = c(0, 0.5, 1)) +
+    theme_classic() +
+  theme(text = element_text(size = 8),
+        legend.position = "none",
+        legend.text = element_text(size = 8))
+
+late_biom_biom_repro <- late_repro_pred %>% 
+  filter(beh_var == "Avg. biomass use" & cond_int == "avg_biom_herd" & predictor_names == "avg_biom_herd" & condition_level %in% c("max_quantity", "min_quantity"))
+
+late_biom_biom_repro <- late_biom_biom_repro[1:20,]
+
+late_biom_biom_repro_plot <- ggplot(late_biom_biom_repro) +
+  geom_line(aes(x = beh_value_unscaled, y = fit, color = condition_level)) +
+    geom_ribbon(aes(x = beh_value_unscaled,
+                    ymin = fit - se.fit, 
+                    ymax = fit + se.fit,
+                    fill = condition_level), 
+                alpha = 0.2) +
+   scale_color_manual(values = cols) +
+  scale_fill_manual(values = cols)  +
+  guides(color = guide_legend(nrow = 2, byrow = TRUE),
+    fill  = guide_legend(nrow = 2, byrow = TRUE)) +
+  labs(y = "Annual calving probability",
+       x = expression("Forage biomass use (g/m"^2*")")) +
+  scale_y_continuous(breaks = c(0, 0.5, 1)) +
+    theme_classic() +
+  theme(text = element_text(size = 8),
+        legend.position = "none",
+        legend.text = element_text(size = 8))
+
+late_fb_biom_repro <- late_repro_pred %>% 
+  filter(beh_var == "Forage use breadth" & cond_int == "avg_biom_herd" & predictor_names == "avg_biom_herd" & condition_level %in% c("max_quantity", "min_quantity"))
+
+late_fb_de_repro <- late_repro_pred %>% 
+  filter(beh_var == "Forage use breadth" & cond_int == "avg_de_herd" & predictor_names == "avg_de_herd" & condition_level %in% c("max_quality", "min_quality"))
+
+late_fb_repro <- bind_rows(late_fb_biom_repro, late_fb_de_repro)
+
+late_fb_repro_plot <- ggplot(late_fb_repro) +
+  geom_line(aes(x = beh_value_unscaled, y = fit, color = condition_level)) +
+    geom_ribbon(aes(x = beh_value_unscaled,
+                    ymin = fit - se.fit, 
+                    ymax = fit + se.fit,
+                    fill = condition_level), 
+                alpha = 0.2) +
+   scale_color_manual(values = cols) +
+  scale_fill_manual(values = cols)  +
+  guides(color = guide_legend(nrow = 2, byrow = TRUE),
+    fill  = guide_legend(nrow = 2, byrow = TRUE)) +
+  labs(y = "Annual calving probability",
+       x = "Forage use breadth") +
+  scale_y_continuous(breaks = c(0, 0.5, 1)) +
+    theme_classic() +
+  theme(text = element_text(size = 8),
+        legend.position = "none",
+        legend.text = element_text(size = 8))
+
+```
+
+```{r}
+# empty plots for non-significant effects
+early_surv_fb_plot <- ggplot(data.frame(x = 0, y = 0), aes(x, y)) +
+  coord_cartesian(xlim = c(0, 40), ylim = c(0, 1)) +
+  labs(x = "Forage use breadth", y = "") +
+  scale_y_continuous(breaks = c(0, 0.5, 1)) +
+  theme_classic() +
+  geom_text(aes(x = 20, y = 0.5), label = "No effect", size = 5) +
+  theme(
+    text = element_text(size = 8),
+    legend.position = "none"
+  )
+
+early_repro_fqual_plot <- ggplot(data.frame(x = 0, y = 0), aes(x, y)) +
+  coord_cartesian(xlim = c(0, 10), ylim = c(0, 1)) +
+  labs(x = "Forage quality", y = "") +
+  scale_y_continuous(breaks = c(0, 0.5, 1)) +
+  theme_classic() +
+  geom_text(aes(x = 5, y = 0.5), label = "No effect", size = 5) +
+  theme(
+    text = element_text(size = 8),
+    legend.position = "none"
+  )
+
+late_surv_fqual_plot <- ggplot(data.frame(x = 0, y = 0), aes(x, y)) +
+  coord_cartesian(xlim = c(0, 10), ylim = c(0, 1)) +
+  labs(x = "Forage quality", y = "", title = "B. Late summer") +
+  scale_y_continuous(breaks = c(0, 0.5, 1)) +
+  theme_classic() +
+  geom_text(aes(x = 5, y = 0.5), label = "No effect", size = 5) +
+  theme(
+    text = element_text(size = 8),
+    legend.position = "none",
+    plot.title = element_text(size = 10)
+  )
+
+late_surv_biom_plot <- ggplot(data.frame(x = 0, y = 0), aes(x, y)) +
+  coord_cartesian(xlim = c(0, 10), ylim = c(0, 1)) +
+  labs(x = expression("Forage biomass use (g/m"^2*")"), y = "Annual survival probability") +
+  scale_y_continuous(breaks = c(0, 0.5, 1)) +
+  theme_classic() +
+  geom_text(aes(x = 5, y = 0.5), label = "No effect", size = 5) +
+  theme(
+    text = element_text(size = 8),
+    legend.position = "none"
+  )
+
+# combine and save plots
+left_col <- (early_de_plot / early_biom2_plot / early_surv_fb_plot) +
+  plot_layout(heights = c(1, 1, 0.8))
+
+left_mid_col <- (early_repro_fqual_plot / early_biom_repro_plot / early_rb_repro_plot) +
+  plot_layout(heights = c(1.2, 1, 1))
+
+
+right_mid_col <-  late_surv_fqual_plot / late_surv_biom_plot / late_fb_surv_plot + plot_layout(heights = c(1, 1, 0.8))
+  
+
+right_col <- (late_dn_plot / late_biom_biom_repro_plot / late_biom_fly_repro_plot /
+                late_fb_repro_plot) +
+  plot_layout(axes = "collect_y")
+
+forage_plot <- (left_col | left_mid_col | right_mid_col | right_col) / plot_spacer() + plot_layout(heights = c(1, 0.1))
+
+
+ggsave("./Figures/forage_survrepro_plot.png", plot = forage_plot,
+       width = 8, height = 6, units = "in")
+
+```

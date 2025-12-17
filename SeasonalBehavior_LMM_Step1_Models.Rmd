@@ -1,0 +1,392 @@
+---
+title: "Seasonal behavior LMMs: Step 1- models"
+output: html_document
+date: "2025-05-23"
+author: "Molly Caldwell"
+---
+
+```{r}
+library(glmmTMB)
+library(tidyverse)
+library(Hmisc)
+library(corrplot)
+library(MuMIn)
+library(flextable)
+library(officer)
+library(patchwork)
+library(performance)
+```
+
+```{r setup}
+setwd("~/OneDrive - University of Wyoming/Documents/USGS_AK_Caribou/")
+```
+
+# Load and prep data
+2 sets of data and analyses for early summer (1 June - 15 July) and late summer (16 July - 31 August)
+
+```{r}
+# Early / late summer forage conditions data
+res_cond_early <- readRDS("./Code_Output/early_forage_per_herdUDs.rds")
+res_cond_late <- readRDS("./Code_Output/late_forage_per_herdUDs.rds")
+
+# Early / late summer insect conditions data
+ins_cond_early <- readRDS("./Code_Output/early_insect_per_herdUDs.rds")
+ins_cond_late <- readRDS("./Code_Output/late_insect_per_herdUDs.rds")
+
+# Early / late summer behaviors data
+early_beh <- readRDS("./Code_Output/early_behaviors.rds")
+late_beh <- readRDS("./Code_Output/late_behaviors.rds")
+  
+```
+
+```{r}
+# add year and animal id to behavior data
+early_beh <- early_beh %>% 
+  mutate(yr = as.numeric(str_split_i(animal_yr, "_", 2)),
+         animal_id = str_split_i(animal_yr, "_", 1))
+
+late_beh <- late_beh %>% 
+  mutate(yr = as.numeric(str_split_i(animal_yr, "_", 2)),
+         animal_id = str_split_i(animal_yr, "_", 1))
+
+# combine forage, insect conditions and behavior datasets
+early_beh <- left_join(early_beh, res_cond_early, by = c("yr" = "year"))
+early_beh <- left_join(early_beh, ins_cond_early, by = c("yr" = "year"))
+
+
+late_beh <- left_join(late_beh, res_cond_late, by = c("yr" = "year"))
+late_beh <- left_join(late_beh, ins_cond_late, by = c("yr" = "year"))
+
+```
+
+```{r}
+# scale and center forage and insect conditions
+cond_vars <- c("avg_biom_herd",  "avg_dn_herd",
+                 "avg_de_herd", 
+               "avg_mosq_herd", 
+               "avg_fly_herd")
+
+early_beh <- early_beh %>% 
+  mutate_at(cond_vars[!cond_vars %in% c("avg_fly_herd", "sd_fly_herd")],
+            ~(scale(as.numeric(.), center = T, scale = T) %>% as.vector))
+
+
+late_beh <- late_beh %>% 
+  mutate_at(cond_vars[!cond_vars %in% c("avg_mosq_herd", "sd_mosq_herd")],
+            ~(scale(as.numeric(.), center = T, scale = T) %>% as.vector))
+
+
+```
+
+```{r}
+# early summer
+# check correlation of conditions variables
+rcorr(as.matrix(early_beh %>% 
+                  select(all_of(cond_vars[!cond_vars %in% c("avg_fly_herd",
+                                                            "sd_fly_herd")]))) )
+
+# correlation plot
+early_beh_corr = cor(early_beh %>% 
+                       select(all_of(cond_vars[!cond_vars %in% c("avg_fly_herd",
+                                                                 "sd_fly_herd")])) %>% 
+        rename(forage_biomass = avg_biom_herd,
+               dig_nitrogen = avg_dn_herd,
+               dig_energy = avg_de_herd,
+               mosq_index = avg_mosq_herd))
+corrplot(early_beh_corr, method = 'number') 
+
+
+
+# late summer
+# check correlation of conditions variables
+rcorr(as.matrix(late_beh %>% 
+                  select(all_of(cond_vars[!cond_vars %in% c("avg_mosq_herd",
+                                                            "sd_mosq_herd")]))))
+
+
+
+# correlation plot
+late_beh_corr = cor(late_beh %>% 
+                       select(all_of(cond_vars[!cond_vars %in% c("avg_mosq_herd",
+                                                                 "sd_mosq_herd")])) %>%  
+                     rename(forage_biomass = avg_biom_herd,
+               dig_nitrogen = avg_dn_herd,
+               dig_energy = avg_de_herd,
+               fly_index = avg_fly_herd) )
+corrplot(late_beh_corr, method = 'number') 
+
+
+
+```
+
+```{r}
+# save datasets used in models
+saveRDS(early_beh, "./Code_Output/early_beh_LMM_data.rds")
+
+saveRDS(late_beh, "./Code_Output/late_beh_LMM_data.rds")
+```
+
+# Early summer linear mixed models
+## Early summer behaviors 
+Model: behavior metric ~ predictors + (1|animal_id)
+predictors include early summer herd range average biomass and digestible nitrogen and mosquito indices
+
+Behavior metrics (individual-level):
+Average daily distance
+Average daily sinuosity
+Average use of forage biomass
+Average use of digestible nitogen & energy
+Early summer home range area
+Early summer home range x & y centroids
+Resource hypervolume volume
+Movement hypervolume volume
+
+
+```{r}
+# pull out behavior metrics (response variables)
+beh_metrics <- c("avg_dist_m", "avg_sinuosity", "avg_biom", "avg_dn",
+                 "avg_de", "HR_area_km2", "centroid_x", "centroid_y",
+                 "resource_vol", "move_vol")
+
+
+# run LMM per behavior metric
+early_beh_models_S1 <- vector(mode = "list", length = length(beh_metrics))
+
+for(i in 1:length(beh_metrics)){
+  print(i)
+  
+    # model formula
+    mod_form1 <- formula(paste(beh_metrics[[i]],
+                            " ~ (1 | animal_id) + avg_biom_herd + avg_mosq_herd"))
+    
+     mod_form2 <- formula(paste(beh_metrics[[i]],
+                            " ~ (1 | animal_id) + avg_dn_herd + avg_mosq_herd"))
+     
+     mod_form3 <- formula(paste(beh_metrics[[i]],
+                            " ~ (1 | animal_id)"))
+    
+    # save LMM to list
+  early_beh_models_S1[[i]][["Forage biomass"]] <- glmmTMB(mod_form1,
+                                 family = gaussian(link = "identity"),
+                                 data = early_beh)
+  
+  early_beh_models_S1[[i]][["Dig. nitrogen"]] <- glmmTMB(mod_form2,
+                                 family = gaussian(link = "identity"),
+                                 data = early_beh)
+  
+  early_beh_models_S1[[i]][["Null"]] <- glmmTMB(mod_form3,
+                                 family = gaussian(link = "identity"),
+                                 data = early_beh)
+  
+}
+
+names(early_beh_models_S1) <- beh_metrics
+
+```
+
+```{r}
+# AIC table
+aic_df_S1 <- list()
+
+for(i in 1:length(early_beh_models_S1)){
+ 
+  # Generate AIC table per model set (per behavior metric)
+  aic_table <- MuMIn::model.sel(early_beh_models_S1[[i]])
+  
+  # Add model names and set identifiers
+  aic_df_S1[[i]] <- as.data.frame(aic_table) %>%
+    tibble::rownames_to_column("model") %>%
+    mutate(model_set = names(early_beh_models_S1)[[i]],
+           .before = everything())
+  
+
+}
+
+aic_df_S1 <- bind_rows(aic_df_S1)
+
+```
+
+```{r}
+# output word docx AIC tables
+## first, subset to variables of interest
+aic_df_S1 <- aic_df_S1 %>% 
+  select(model_set, model, df, logLik, AICc, delta, weight)
+
+## then, round values
+aic_df_S1 <- aic_df_S1 %>%
+  mutate(across(where(is.numeric), ~round(.x, 3)))
+
+# format it as a flextable
+ft <- flextable(aic_df_S1)
+
+# autofit column widths
+ft <- autofit(ft)
+
+# create a Word document and add the table
+doc <- read_docx() %>%
+  body_add_par("early behavior AIC", style = "heading 1") %>%
+  body_add_flextable(ft)
+
+# save the Word document
+print(doc, target = "./Code_Output/early_behavior_AIC_S1.docx")
+```
+
+```{r}
+# pull models with AIC > NULL
+top_models <- vector(mode = "list", length = length(early_beh_models_S1))
+
+for(i in 1:length(early_beh_models_S1)){
+  print(i)
+  set <- names(early_beh_models_S1)[[i]] # pull response set
+  
+  delta_NULL <- aic_df_S1 %>% 
+    filter(model_set == set & model == "Null")
+    
+top_aic_mod <- aic_df_S1 %>% 
+    filter(model_set == set & delta < delta_NULL$delta[1]) 
+
+# pull model
+  top_models[[i]] <- early_beh_models_S1[[set]][top_aic_mod$model]
+}
+
+names(top_models) <- names(early_beh_models_S1)
+
+# remove empty list objects (responses with no significant predictors)
+top_models <- top_models[sapply(top_models, length) > 0]
+
+# save top models
+saveRDS(top_models, "./Code_Output/early_behavior_LMMs.rds")
+```
+
+
+# Late summer linear mixed models
+## Late summer behaviors 
+Model: behavior metric ~ predictors + (1|animal_id)
+predictors include late summer herd range average biomass, average and SD DE, average and SD fly indices
+
+Behavior metrics (individual-level):
+Average daily distance
+Average daily sinuosity
+Average use of forage biomass
+Average use of digestible nitogen & energy
+late summer home range area
+late summer home range x & y centroids
+Resource hypervolume volume
+Movement hypervolume volume
+
+
+```{r}
+# pull out behavior metrics (response variables)
+beh_metrics <- c("avg_dist_m", "avg_sinuosity", "avg_biom", "avg_dn",
+                 "avg_de", "HR_area_km2", "centroid_x", "centroid_y",
+                 "resource_vol", "move_vol")
+
+
+# run LMM per behavior metric
+late_beh_models_S1 <- vector(mode = "list", length = length(beh_metrics))
+
+for(i in 1:length(beh_metrics)){
+  print(i)
+  
+    # model formula
+    mod_form1 <- formula(paste(beh_metrics[[i]],
+                            " ~ (1 | animal_id) + avg_biom_herd + avg_fly_herd"))
+    
+     mod_form2 <- formula(paste(beh_metrics[[i]],
+                            " ~ (1 | animal_id) + avg_de_herd + avg_fly_herd"))
+     
+     mod_form3 <- formula(paste(beh_metrics[[i]],
+                            " ~ (1 | animal_id)"))
+    
+    # save LMM to list
+  late_beh_models_S1[[i]][["Forage biomass"]] <- glmmTMB(mod_form1,
+                                 family = gaussian(link = "identity"),
+                                 data = late_beh)
+  
+  late_beh_models_S1[[i]][["Dig. energy"]] <- glmmTMB(mod_form2,
+                                 family = gaussian(link = "identity"),
+                                 data = late_beh)
+  
+  late_beh_models_S1[[i]][["Null"]] <- glmmTMB(mod_form3,
+                                 family = gaussian(link = "identity"),
+                                 data = late_beh)
+  
+}
+
+names(late_beh_models_S1) <- beh_metrics
+
+```
+
+```{r}
+# AIC table
+aic_df_S1 <- list()
+
+for(i in 1:length(late_beh_models_S1)){
+ 
+  # Generate AIC table per model set (per behavior metric)
+  aic_table <- MuMIn::model.sel(late_beh_models_S1[[i]])
+  
+  # Add model names and set identifiers
+  aic_df_S1[[i]] <- as.data.frame(aic_table) %>%
+    tibble::rownames_to_column("model") %>%
+    mutate(model_set = names(late_beh_models_S1)[[i]],
+           .before = everything())
+  
+
+}
+
+aic_df_S1 <- bind_rows(aic_df_S1)
+
+```
+
+```{r}
+# output word docx AIC tables
+## first, subset to variables of interest
+aic_df_S1 <- aic_df_S1 %>% 
+  select(model_set, model, df, logLik, AICc, delta, weight)
+
+## then, round values
+aic_df_S1 <- aic_df_S1 %>%
+  mutate(across(where(is.numeric), ~round(.x, 3)))
+
+# format it as a flextable
+ft <- flextable(aic_df_S1)
+
+# autofit column widths
+ft <- autofit(ft)
+
+# create a Word document and add the table
+doc <- read_docx() %>%
+  body_add_par("late behavior AIC", style = "heading 1") %>%
+  body_add_flextable(ft)
+
+# save the Word document
+print(doc, target = "./Code_Output/late_behavior_AIC_S1.docx")
+```
+
+```{r}
+# pull models with AIC > NULL
+top_models <- vector(mode = "list", length = length(late_beh_models_S1))
+
+for(i in 1:length(late_beh_models_S1)){
+  print(i)
+  set <- names(late_beh_models_S1)[[i]] # pull response set
+  
+  delta_NULL <- aic_df_S1 %>% 
+    filter(model_set == set & model == "Null")
+    
+top_aic_mod <- aic_df_S1 %>% 
+    filter(model_set == set & delta < delta_NULL$delta[1]) 
+
+# pull model
+  top_models[[i]] <- late_beh_models_S1[[set]][top_aic_mod$model]
+}
+
+names(top_models) <- names(late_beh_models_S1)
+
+# remove empty list objects (responses with no significant predictors)
+top_models <- top_models[sapply(top_models, length) > 0]
+
+# save top models
+saveRDS(top_models, "./Code_Output/late_behavior_LMMs.rds")
+```

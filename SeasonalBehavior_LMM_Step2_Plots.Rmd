@@ -1,0 +1,592 @@
+---
+title: "Seasonal behavior LMMs: Step 2- plots"
+output: html_document
+date: "2025-05-23"
+author: "Molly Caldwell"
+---
+
+```{r}
+library(glmmTMB)
+library(tidyverse)
+library(patchwork)
+library(emmeans)
+library(ggh4x)
+```
+
+```{r setup}
+setwd("~/OneDrive - University of Wyoming/Documents/USGS_AK_Caribou/")
+```
+
+# Early summer
+## Load in data and models
+
+```{r}
+# early behavior data
+early_beh <- readRDS("./Code_Output/early_beh_LMM_data.rds")
+
+# early behavior models 
+early_beh_mod <- readRDS("./Code_Output/early_behavior_LMMs.rds")
+
+```
+
+
+# Generate predictions from models
+
+## Early summer behavior models
+
+```{r}
+# generate predictions for each model per predictor
+# create list to save results
+early_beh_pred <- vector(mode = "list", length = length(early_beh_mod))
+
+# now, loop over each model
+for(i in 1:length(early_beh_mod)){
+  print(i)
+  
+  for(j in 1:length(early_beh_mod[[i]])){
+  
+    form <- as.character(formula(early_beh_mod[[i]][[j]])) # first, pull formula from model
+  
+  # then, pull predictors
+  predictors <- str_remove(form[[3]], "\\(1 \\| animal_id\\) \\+ ")
+  predictors <- str_split_1(predictors, " \\+ ")
+  
+# now, create datasets per predictor, holding any other predictors at their average
+  # Calculate each predictor's means
+  means <- colMeans(early_beh[,predictors])
+  
+  seq_list <- lapply(early_beh[,predictors], 
+                     function(x) seq(min(x), max(x), length.out = 10))
+  
+  # Create list to store datasets
+  data_pred <- list()
+  
+  # Loop through each variable
+  for (k in seq_along(means)) {
+    var_names <- names(means)
+    
+    # Start with means for all variables
+    grid_vals <- as.list(means)
+    
+    # Replace the j-th variable with a sequence
+    grid_vals[[k]] <- seq_list[[k]]
+    
+    # Generate the data grid
+    data_pred[[k]] <- expand.grid(grid_vals)
+    
+    # Name the list entry for clarity
+    names(data_pred)[k] <- var_names[k]
+  }
+  
+  ## then, generate model predictions for the response per each predictor dataset
+  temp <- list()
+  
+
+  for(k in 1:length(data_pred)){
+    pred <- predict(early_beh_mod[[i]][[j]], newdata = data_pred[[k]], 
+                type = "response", se.fit = TRUE,
+                re.form = NA)
+    
+    temp[[k]] <- data_pred[[k]]
+    temp[[k]]$fit <- pred$fit
+    temp[[k]]$se.fit <- pred$se.fit
+    temp[[k]]$model <- names(early_beh_mod[[i]])[[j]]
+  }
+  
+  names(temp) <- names(data_pred)
+  early_beh_pred[[i]][[j]] <- temp
+  rm(temp)
+  }
+}
+  
+
+names(early_beh_pred) <- names(early_beh_mod)
+  
+```
+
+## Model summaries
+
+```{r}
+# compile model summaries into a single dataframe
+# early behavior models
+early_beh_summ <- vector(mode = "list", length = length(early_beh_mod))
+
+for(i in 1:length(early_beh_mod)){
+  for(j in 1:length(early_beh_mod[[i]])){
+    df <- as.data.frame(summary(early_beh_mod[[i]][[j]])$coefficients$cond)
+    df$mod_num <- 1
+     df$Variable <- rownames(df)
+    rownames(df) <- NULL
+    df$Response <- names(early_beh_mod)[[i]]
+    df$model <- names(early_beh_mod[[i]])[[j]]
+    
+    early_beh_summ[[i]][[j]] <- df
+  }
+  early_beh_summ[[i]] <- bind_rows(early_beh_summ[[i]])
+}
+
+early_beh_summ <- bind_rows(early_beh_summ)
+early_beh_summ <- early_beh_summ %>% rename(Pvalue = `Pr(>|z|)`)
+
+
+```
+
+```{r}
+# look at results with p-values <0.1
+early_beh_sig <- early_beh_summ %>% 
+  filter(Pvalue < 0.1)
+
+```
+
+```{r}
+# first, arrange predicted data into a single, combined data frame
+# for early behaviors
+for(i in 1:length(early_beh_pred)){
+  
+  for(j in 1:length(early_beh_pred[[i]])){
+    for(k in 1:length(early_beh_pred[[i]][[j]])){
+    
+      early_beh_pred[[i]][[j]][[k]]$predictor <- names(early_beh_pred[[i]][[j]])[[k]]
+    
+    early_beh_pred[[i]][[j]][[k]] <- early_beh_pred[[i]][[j]][[k]] %>% 
+      rename(predictor_value = as.symbol(names(early_beh_pred[[i]][[j]])[[k]])) %>% 
+      select(predictor, predictor_value, model, fit, se.fit) 
+    }
+    early_beh_pred[[i]][[j]] <- bind_rows(early_beh_pred[[i]][[j]])
+  }
+  
+  early_beh_pred[[i]] <- bind_rows(early_beh_pred[[i]])
+  early_beh_pred[[i]]$response <- names(early_beh_pred)[[i]]
+    
+}
+
+early_beh_pred <- bind_rows(early_beh_pred)
+
+# filter predictions to significant results
+## first rename summary variables to match predictions
+early_beh_summ <- early_beh_summ %>% 
+  rename(predictor = Variable, response = Response) %>% 
+  select(predictor, response, model, Pvalue)
+
+## join model summary and prediction data
+early_beh_pred <- left_join(early_beh_pred, early_beh_summ)
+
+## filter to p-value < 0.05
+early_beh_pred <- early_beh_pred %>% 
+  filter(Pvalue < 0.05)
+
+# then, clean up response & predictor names
+early_beh_pred <- early_beh_pred %>% 
+  mutate(response = case_when(
+    response == "avg_dist_m" ~ "Avg. displacement (m)",
+    response == "avg_sinuosity" ~ "Avg. sinuosity",
+    response == "avg_biom" ~ "Avg. biomass use",
+    response == "avg_de" ~ "Avg. dig. energy use",
+    response == "HR_area_km2" ~ "Seasonal range area (km^2)",
+    response == "centroid_x" ~ "Seasonal range longitude",
+    response == "centroid_y" ~ "Seasonal range latitude",
+    response == "resource_vol" ~ "Forage use breadth",
+    response == "move_vol" ~ "Movement breadth"),
+response_type = case_when(
+    response %in% c("Seasonal range area (km^2)", "Seasonal range longitude",
+                    "Seasonal range latitude") ~ "Space use",
+    response %in% c("Avg. displacement (m)", "Avg. sinuosity",
+                    "Movement breadth") ~ "Movement behaviors",
+    response %in% c("Avg. biomass use", "Avg. dig. energy use",
+                    "Forage use breadth") ~ "Forage use"),
+predictor_type = case_when(
+  str_detect(predictor, "biom") ~ "Forage quantity",
+  str_detect(predictor, "dn") ~ "Forage quality",
+  str_detect(predictor, "de") ~ "Forage quality",
+  str_detect(predictor, "mosq") ~ "Insect indices"),
+predictor = case_when(
+  str_detect(predictor, "biom") ~ "Forage biomass",
+  str_detect(predictor, "dn") ~ "Dig. nitrogen",
+  str_detect(predictor, "de") ~ "Dig. energy",
+  str_detect(predictor, "mosq") ~ "Mosquito indices"
+)
+)
+```
+
+# Late summer
+## Load in data and models
+
+```{r}
+# late behavior data
+late_beh <- readRDS("./Code_Output/late_beh_LMM_data.rds")
+
+# late behavior models 
+late_beh_mod <- readRDS("./Code_Output/late_behavior_LMMs.rds")
+```
+
+# Generate predictions from models
+
+## late summer behavior models
+
+```{r}
+# generate predictions for each model per predictor
+# create list to save results
+late_beh_pred <- vector(mode = "list", length = length(late_beh_mod))
+
+# now, loop over each model
+for(i in 1:length(late_beh_mod)){
+  print(i)
+  
+  for(j in 1:length(late_beh_mod[[i]])){
+  
+    form <- as.character(formula(late_beh_mod[[i]][[j]])) # first, pull formula from model
+  
+  # then, pull predictors
+  predictors <- str_remove(form[[3]], "\\(1 \\| animal_id\\) \\+ ")
+  predictors <- str_split_1(predictors, " \\+ ")
+  
+  # remove quadratic from string if present
+  for(k in 1:length(predictors)){
+    if(str_detect(predictors[k], "I")){
+     predictors[k] <- str_remove_all(predictors[k], "I\\(|\\^2\\)")
+    }
+  }
+  
+# now, create datasets per predictor, holding any other predictors at their average
+  # Calculate each predictor's means
+  means <- colMeans(late_beh[,predictors])
+  
+  seq_list <- lapply(late_beh[,predictors], 
+                     function(x) seq(min(x), max(x), length.out = 10))
+  
+  # Create list to store datasets
+  data_pred <- list()
+  
+  # Loop through each variable
+  for (k in seq_along(means)) {
+    var_names <- names(means)
+    
+    # Start with means for all variables
+    grid_vals <- as.list(means)
+    
+    # Replace the j-th variable with a sequence
+    grid_vals[[k]] <- seq_list[[k]]
+    
+    # Generate the data grid
+    data_pred[[k]] <- expand.grid(grid_vals)
+    
+    # Name the list entry for clarity
+    names(data_pred)[k] <- var_names[k]
+  }
+  
+  ## then, generate model predictions for the response per each predictor dataset
+  temp <- list()
+  
+
+  for(k in 1:length(data_pred)){
+    pred <- predict(late_beh_mod[[i]][[j]], newdata = data_pred[[k]], 
+                type = "response", se.fit = TRUE,
+                re.form = NA)
+    
+    temp[[k]] <- data_pred[[k]]
+    temp[[k]]$fit <- pred$fit
+    temp[[k]]$se.fit <- pred$se.fit
+    temp[[k]]$model <- names(late_beh_mod[[i]])[[j]]
+  }
+  
+  names(temp) <- names(data_pred)
+  late_beh_pred[[i]][[j]] <- temp
+  rm(temp)
+  }
+}
+  
+
+names(late_beh_pred) <- names(late_beh_mod)
+  
+```
+
+## Model summaries
+
+```{r}
+# compile model summaries into a single dataframe
+# late behavior models
+late_beh_summ <- vector(mode = "list", length = length(late_beh_mod))
+
+for(i in 1:length(late_beh_mod)){
+  for(j in 1:length(late_beh_mod[[i]])){
+    df <- as.data.frame(summary(late_beh_mod[[i]][[j]])$coefficients$cond)
+    df$mod_num <- 1
+     df$Variable <- rownames(df)
+    rownames(df) <- NULL
+    df$Response <- names(late_beh_mod)[[i]]
+    df$model <- names(late_beh_mod[[i]])[[j]]
+    
+    late_beh_summ[[i]][[j]] <- df
+  }
+  late_beh_summ[[i]] <- bind_rows(late_beh_summ[[i]])
+}
+
+late_beh_summ <- bind_rows(late_beh_summ)
+late_beh_summ <- late_beh_summ %>% rename(Pvalue = `Pr(>|z|)`)
+
+
+```
+
+```{r}
+# look at results with p-values <0.1
+late_beh_sig <- late_beh_summ %>% 
+  filter(Pvalue < 0.1)
+
+```
+
+```{r}
+# first, arrange predicted data into a single, combined data frame
+# for late behaviors
+for(i in 1:length(late_beh_pred)){
+  
+  for(j in 1:length(late_beh_pred[[i]])){
+    for(k in 1:length(late_beh_pred[[i]][[j]])){
+    
+      late_beh_pred[[i]][[j]][[k]]$predictor <- names(late_beh_pred[[i]][[j]])[[k]]
+    
+    late_beh_pred[[i]][[j]][[k]] <- late_beh_pred[[i]][[j]][[k]] %>% 
+      rename(predictor_value = as.symbol(names(late_beh_pred[[i]][[j]])[[k]])) %>% 
+      select(predictor, predictor_value, model, fit, se.fit) 
+    }
+    late_beh_pred[[i]][[j]] <- bind_rows(late_beh_pred[[i]][[j]])
+  }
+  
+  late_beh_pred[[i]] <- bind_rows(late_beh_pred[[i]])
+  late_beh_pred[[i]]$response <- names(late_beh_pred)[[i]]
+    
+}
+
+late_beh_pred <- bind_rows(late_beh_pred)
+
+# filter predictions to significant results
+## first rename summary variables to match predictions
+late_beh_summ <- late_beh_summ %>% 
+  rename(predictor = Variable, response = Response) %>% 
+  select(predictor, response, model, Pvalue)
+
+## join model summary and prediction data
+late_beh_pred <- left_join(late_beh_pred, late_beh_summ)
+
+## filter to p-value < 0.05
+late_beh_pred <- late_beh_pred %>% 
+  filter(Pvalue < 0.05)
+
+# then, clean up response & predictor names
+late_beh_pred <- late_beh_pred %>% 
+  mutate(response = case_when(
+    response == "avg_dist_m" ~ "Avg. displacement (m)",
+    response == "avg_sinuosity" ~ "Avg. sinuosity",
+    response == "avg_biom" ~ "Avg. biomass use",
+    response == "avg_de" ~ "Avg. dig. energy use",
+    response == "HR_area_km2" ~ "Seasonal range area (km^2)",
+    response == "centroid_x" ~ "Seasonal range longitude",
+    response == "centroid_y" ~ "Seasonal range latitude",
+    response == "resource_vol" ~ "Forage use breadth",
+    response == "move_vol" ~ "Movement breadth"),
+response_type = case_when(
+    response %in% c("Seasonal range area (km^2)", "Seasonal range longitude",
+                    "Seasonal range latitude") ~ "Space use",
+    response %in% c("Avg. displacement (m)", "Avg. sinuosity",
+                    "Movement breadth") ~ "Movement behaviors",
+    response %in% c("Avg. biomass use", "Avg. dig. energy use",
+                    "Forage use breadth") ~ "Forage use"),
+predictor_type = case_when(
+  str_detect(predictor, "biom") ~ "Forage quantity",
+  str_detect(predictor, "dn") ~ "Forage quality",
+  str_detect(predictor, "de") ~ "Forage quality",
+  str_detect(predictor, "fly") ~ "Insect indices"),
+predictor = case_when(
+  str_detect(predictor, "biom") ~ "Forage biomass",
+  str_detect(predictor, "dn") ~ "Dig. nitrogen",
+  str_detect(predictor, "de") ~ "Dig. energy",
+  str_detect(predictor, "fly") ~ "Oestrid indices"
+)
+)
+```
+
+# Plots
+
+```{r}
+# pull first model set values per predictor (i.e., drop duplicate predictions for predictors that are in multiple models)
+late_beh_pred <- late_beh_pred %>%
+  group_by(predictor, response) %>%
+  arrange(model) %>%             # make sure models are ordered
+  filter(model == first(model)) %>% 
+  ungroup()
+
+early_beh_pred <- early_beh_pred %>%
+  group_by(predictor, response) %>%
+  arrange(model) %>%             # make sure models are ordered
+  filter(model == first(model)) %>% 
+  ungroup()
+```
+
+```{r}
+# set colors for plots
+cols <- c("Forage quantity" = "#b8691e",
+          "Forage quality" = "#537e5b",
+          "Insect indices" = "#8b4981")
+```
+
+```{r}
+# space use
+space_data_early <- early_beh_pred %>% filter(response_type == "Space use") %>% 
+  mutate(predictor_type = factor(predictor_type, levels = c("Forage quantity",
+                                                            "Forage quality",
+                                                            "Insect indices")))
+
+# add dummy row for forage quality color to show
+dummy <- data.frame(predictor_type = "Forage quality", response = "Seasonal range area (km^2)")
+space_data_early <- bind_rows(space_data_early, dummy) %>% 
+  mutate(response = factor(response, levels = c("Seasonal range longitude",
+                                                "Seasonal range latitude",
+                                                "Seasonal range area (km^2)"),
+                           ordered = TRUE))
+
+plot_early_space <- ggplot(space_data_early) +
+    geom_line(aes(x = predictor_value, y = fit,
+                  color = predictor_type)) +
+    geom_ribbon(aes(x = predictor_value,
+                    ymin = fit - se.fit, 
+                    ymax = fit + se.fit,
+                    fill = predictor_type), 
+                alpha = 0.2) +
+  facet_grid(rows = vars(response),
+             scales = "free_y",
+             switch = "y") +
+  scale_x_continuous(n.breaks = 4) +
+  scale_y_continuous(breaks = scales::breaks_pretty(n = 3)) +
+  scale_color_manual(values = cols, breaks = names(cols)) +
+  scale_fill_manual(values = cols, breaks = names(cols)) +
+  labs(x = "Environ. condition values (scaled)",
+       y = "", color = "", fill = "") +
+    theme_classic() +
+    theme(strip.background = element_blank(),
+          strip.placement = "outside",
+          strip.text = element_text(size = 8),
+          text = element_text(size = 8),
+          legend.position = "bottom",
+          legend.text = element_text(size = 8))
+
+space_data_late <- late_beh_pred %>% filter(response_type == "Space use") %>% 
+  mutate(response = factor(response, levels = c("Seasonal range longitude",
+                                                "Seasonal range latitude",
+                                                "Seasonal range area (km^2)"),
+                           ordered = TRUE)) %>% 
+  mutate(predictor_type = factor(predictor_type, levels = c("Forage quantity",
+                                                            "Forage quality",
+                                                            "Insect indices")))
+
+plot_late_space <- ggplot(space_data_late) +
+    geom_line(aes(x = predictor_value, y = fit,
+                  color = predictor_type)) +
+    geom_ribbon(aes(x = predictor_value,
+                    ymin = fit - se.fit, 
+                    ymax = fit + se.fit,
+                    fill = predictor_type), 
+                alpha = 0.2) +
+  facet_grid(rows = vars(response),
+             scales = "free_y",
+             switch = "y") +
+  scale_x_continuous(n.breaks = 4) +
+  scale_y_continuous(breaks = scales::breaks_pretty(n = 3)) +
+  scale_color_manual(values = cols, breaks = names(cols)) +
+  scale_fill_manual(values = cols, breaks = names(cols)) +
+  labs(x = "Environ. condition values (scaled)",
+       y = "", color = "", fill = "") +
+    theme_classic() +
+    theme(strip.background = element_blank(),
+          strip.placement = "outside",
+           strip.text = element_text(size = 8),
+          text = element_text(size = 8),
+          legend.position = "bottom",
+          legend.text = element_text(size = 8))
+
+plot_space <- ((plot_spacer() / (plot_early_space + labs(title = "A. Early summer") + 
+                                   theme(title = element_text(size = 8))) +
+  plot_layout(heights = c(0.4, 1))) | (plot_late_space + labs(title = "B. Late summer") +
+                                         theme(title = element_text(size = 8)))) +
+  plot_layout(guides = "collect") & theme(legend.position = "bottom")
+
+  filename = paste("./Figures/seas_beh_LMM_plot_", 
+                   "space_use", ".png")
+  
+  ggsave(filename = filename, plot = plot_space,
+         height = 6, width = 6, units = "in")
+```
+
+```{r}
+# plot movement behaviors
+move_data_early <- early_beh_pred %>% filter(response_type == "Movement behaviors")
+
+plot_early_move <- ggplot(move_data_early) +
+    geom_line(aes(x = predictor_value, y = fit,
+                  color = predictor_type)) +
+    geom_ribbon(aes(x = predictor_value,
+                    ymin = fit - se.fit, 
+                    ymax = fit + se.fit,
+                    fill = predictor_type), 
+                alpha = 0.2) +
+  facet_grid(rows = vars(response),
+             scales = "free_y",
+             switch = "y") +
+  scale_x_continuous(n.breaks = 4) +
+  scale_y_continuous(breaks = scales::breaks_pretty(n = 3)) +
+  scale_color_manual(values = cols, breaks = names(cols)) +
+  scale_fill_manual(values = cols, breaks = names(cols)) +
+  labs(x = "Environ. condition values (scaled)",
+       y = "", color = "", fill = "") +
+    theme_classic() +
+     theme(strip.background = element_blank(),
+          strip.placement = "outside",
+           strip.text = element_text(size = 8),
+          text = element_text(size = 8),
+          legend.position = "bottom",
+          legend.text = element_text(size = 8))
+
+
+# add dummy row for insect indices color to show
+dummy <- data.frame(predictor_type = "Insect indices", response = "Movement breadth")
+move_data_late <- bind_rows(late_beh_pred %>% filter(response_type == "Movement behaviors"), dummy)
+                           
+plot_late_move <- ggplot(move_data_late) +
+    geom_line(aes(x = predictor_value, y = fit,
+                  color = predictor_type)) +
+    geom_ribbon(aes(x = predictor_value,
+                    ymin = fit - se.fit, 
+                    ymax = fit + se.fit,
+                    fill = predictor_type), 
+                alpha = 0.2) +
+  facet_grid(rows = vars(response),
+             scales = "free_y",
+             switch = "y") +
+  scale_x_continuous(n.breaks = 4) +
+  scale_y_continuous(breaks = scales::breaks_pretty(n = 3)) +
+  scale_color_manual(values = cols, breaks = names(cols)) +
+  scale_fill_manual(values = cols, breaks = names(cols)) +
+  labs(x = "Environ. condition values (scaled)",
+       y = "", color = "", fill = "") +
+    theme_classic() +
+     theme(strip.background = element_blank(),
+          strip.placement = "outside",
+           strip.text = element_text(size = 8),
+          text = element_text(size = 8),
+          legend.position = "bottom",
+          legend.text = element_text(size = 8))
+
+plot_move <- (plot_early_move + labs(title = "A. Early summer") + 
+                                   theme(title = element_text(size = 8))) + 
+  (plot_late_move + labs(title = "B. Late summer") + 
+                                   theme(title = element_text(size = 8))) +
+  plot_layout(axis_titles = "collect") + plot_layout(guides = "collect") & 
+  theme(legend.position = 'bottom')
+  
+
+  filename = paste("./Figures/seas_beh_LMM_plot_", 
+                   "move", ".png")
+  
+  ggsave(filename = filename, plot = plot_move,
+         height = 6, width = 6, units = "in")
+```
+
+

@@ -1,0 +1,801 @@
+---
+title: "Seasonal Parturition: Step 1- Models"
+output: html_document
+date: "2025-09-16"
+---
+
+```{r}
+library(glmmTMB)
+library(tidyverse)
+library(Hmisc)
+library(corrplot)
+library(MuMIn)
+library(flextable)
+library(officer)
+library(readxl)
+```
+
+```{r setup}
+setwd("~/OneDrive - University of Wyoming/Documents/USGS_AK_Caribou/")
+```
+
+# Load and prep data
+
+```{r}
+# early and late summer behaviors
+early_beh <- readRDS("./Code_Output/early_beh_LMM_data.rds")
+late_beh <- readRDS("./Code_Output/late_beh_LMM_data.rds")
+
+# parturition
+part <- read_excel("./Data/AnnualCaribouParturition.xlsx")
+```
+
+```{r}
+# combine behavior and fitness data
+## first, add animal-yr to parturition data for prior year (e.g., do year of parturition data - 1 year)
+## this way, the parturition data is for the following year than the behavior data
+part_prior <- part %>% 
+  mutate(animal_yr = paste(`Animal Id`, Year - 1, sep = "_")) %>% 
+  select(animal_yr, Post_Calving_Survey_Calf_Present) %>% 
+  mutate(across(-animal_yr, ~ case_when(
+    . == "Y" ~ 1,
+    . == "N" ~ 0,
+    . == "NA" ~ NA
+  ))) %>% 
+  rename(Next_Yr_Calf_Present = Post_Calving_Survey_Calf_Present)
+
+## then, add parturition for current year to control for current reproductive investment
+part_same <- part %>% 
+  mutate(animal_yr = paste(`Animal Id`, Year, sep = "_")) %>% 
+  select(animal_yr, Post_Calving_Survey_Calf_Present) %>% 
+  mutate(across(-animal_yr, ~ case_when(
+    . == "Y" ~ 1,
+    . == "N" ~ 0,
+    . == "NA" ~ NA
+  ))) %>% 
+  rename(Current_Calf_Present = Post_Calving_Survey_Calf_Present)
+
+# join parturition with behaviors
+early_beh <- left_join(early_beh, part_prior)
+early_beh <- left_join(early_beh, part_same)
+
+late_beh <- left_join(late_beh, part_prior)
+late_beh <- left_join(late_beh, part_same)
+
+```
+
+```{r}
+# scale and center behaviors so they are on similar scales as conditions
+behaviors <- c("avg_biom", "avg_dn", "avg_de", "resource_vol",
+               "avg_dist_m", "avg_sinuosity", "HR_area_km2", "centroid_x",
+               "centroid_y", "move_vol")
+early_beh_sc <- early_beh %>% 
+  mutate(across(all_of(behaviors), ~as.numeric(scale(.))))
+
+late_beh_sc <- late_beh %>% 
+  mutate(across(all_of(behaviors), ~as.numeric(scale(.))))
+
+```
+
+```{r}
+# combine scaled & unscaled data together, for plots in step 2
+early_beh <- early_beh %>%
+  rename_with(~ paste0(.x, "_unscaled"),
+              c("avg_biom", "avg_dn", "avg_de", "resource_vol",
+                "avg_dist_m", "avg_sinuosity", "HR_area_km2", 
+                "centroid_x", "centroid_y", "move_vol"))
+
+late_beh <- late_beh %>%
+  rename_with(~ paste0(.x, "_unscaled"),
+              c("avg_biom", "avg_dn", "avg_de", "resource_vol",
+                "avg_dist_m", "avg_sinuosity", "HR_area_km2", 
+                "centroid_x", "centroid_y", "move_vol"))
+
+early_beh <- left_join(early_beh, early_beh_sc)
+late_beh <- left_join(late_beh, late_beh_sc)
+```
+
+```{r}
+# save data used in models
+saveRDS(early_beh, "./Code_Output/early_beh_part_data.rds")
+saveRDS(late_beh, "./Code_Output/late_beh_part_data.rds")
+```
+
+# Calving
+
+## Seasonal behaviors
+
+### Early summer
+Effect of breadths & averages of early summer behaviors on the following year's calving
+
+```{r}
+# check correlation of annual behaviors
+beh_metrics <- c("avg_biom", "I(avg_biom^2)", "avg_dn", "avg_de", "resource_vol",
+                 "avg_dist_m", "avg_sinuosity", "HR_area_km2", "centroid_x",
+               "centroid_y", "move_vol")
+
+early_beh_corr = cor(early_beh %>% select(all_of(c("avg_biom", "avg_dn", 
+                                               "avg_de", "resource_vol",
+                                               "avg_dist_m", "avg_sinuosity", 
+                                               "HR_area_km2", "centroid_x",
+                                               "centroid_y", "move_vol"))))
+corrplot(early_beh_corr, method = 'number', number.cex = 0.7) 
+```
+
+```{r}
+# loop through behavior metrics, running logistic model
+beh_part_early_mod <- vector(mode = "list", length = length(beh_metrics))
+
+for(i in 1:length(beh_metrics)){
+  print(i)
+  
+
+  form <- as.formula(paste("Next_Yr_Calf_Present ~ Current_Calf_Present + ", beh_metrics[[i]]))
+  
+  beh_part_early_mod[[i]] <- glmmTMB(formula = form,
+                            data = early_beh,
+                            family = binomial(link = "logit"))
+  
+}
+
+names(beh_part_early_mod) <- beh_metrics
+```
+
+```{r}
+# compile model results into a dataframe
+beh_part_early_results <- vector(mode = "list", length = length(beh_part_early_mod))
+
+for(i in 1:length(beh_part_early_mod)){
+  beh_part_early_results[[i]] <- as.data.frame(summary(beh_part_early_mod[[i]])$coefficients$cond)
+  beh_part_early_results[[i]]$predictor <- rownames(beh_part_early_results[[i]])
+  rownames(beh_part_early_results[[i]]) <- NULL
+  }
+  
+beh_part_early_results <- bind_rows(beh_part_early_results)
+
+# filter out intercept
+beh_part_early_results <- beh_part_early_results %>% 
+  filter(predictor != "(Intercept)")
+
+# arrange by p-value
+beh_part_early_results <- beh_part_early_results %>% 
+  arrange(`Pr(>|z|)`) 
+```
+
+### Behavior x annual forage & insect conditions
+Effect of breadths & averages of early summer behaviors interacted with forage & insect conditions on the following year's parturition
+
+Conditions used: average and SD of biomass, DN, mosquito
+
+```{r}
+# name behavior metrics and conditions to loop over
+beh_metrics <- c("avg_biom", "I(avg_biom^2)", "avg_dn", "avg_de", "resource_vol",
+                 "avg_dist_m", "avg_sinuosity", "HR_area_km2", "centroid_x",
+               "centroid_y", "move_vol")
+cond_metrics <- c("avg_biom_herd", "avg_dn_herd")
+```
+
+```{r}
+# loop through behavior metrics, running logistic model
+beh_cond_part_early_mod <- vector(mode = "list", length = length(beh_metrics))
+
+for(i in 1:length(beh_metrics)){
+  print(i)
+  beh_cond_part_early_mod[[i]] <- vector(mode = "list", length = length(cond_metrics))
+  
+  for(j in 1:length(cond_metrics)){
+  
+
+  form <- as.formula(paste("Next_Yr_Calf_Present ~ Current_Calf_Present +", beh_metrics[[i]], " * avg_mosq_herd + ", beh_metrics[[i]], " * ", cond_metrics[[j]]))
+  
+  beh_cond_part_early_mod[[i]][[j]] <- glmmTMB(formula = form,
+                            data = early_beh,
+                            family = binomial(link = "logit"))
+  
+  }
+  
+  names(beh_cond_part_early_mod[[i]]) <- cond_metrics
+}
+
+names(beh_cond_part_early_mod) <- beh_metrics
+```
+
+```{r}
+# compile model results into a dataframe
+beh_cond_part_early_results <- vector(mode = "list", length = length(beh_cond_part_early_mod))
+
+for(i in 1:length(beh_cond_part_early_mod)){
+  beh_cond_part_early_results[[i]] <- vector(mode = "list", 
+                                       length = length(beh_cond_part_early_mod[[i]]))
+  
+  for(j in 1:length(beh_cond_part_early_mod[[i]])){
+
+      
+  beh_cond_part_early_results[[i]][[j]] <- as.data.frame(summary(beh_cond_part_early_mod[[i]][[j]])$coefficients$cond)
+  beh_cond_part_early_results[[i]][[j]]$beh <- names(beh_cond_part_early_mod)[[i]]
+  beh_cond_part_early_results[[i]][[j]]$cond <- names(beh_cond_part_early_mod[[i]])[[j]]
+  beh_cond_part_early_results[[i]][[j]]$predictor <- rownames(beh_cond_part_early_results[[i]][[j]])
+  rownames(beh_cond_part_early_results[[i]][[j]]) <- NULL
+    }
+    beh_cond_part_early_results[[i]] <- bind_rows(beh_cond_part_early_results[[i]])
+  }
+
+
+beh_cond_part_early_results <- bind_rows(beh_cond_part_early_results)
+
+# filter out intercept
+beh_cond_part_early_results <- beh_cond_part_early_results %>% 
+  filter(predictor != "(Intercept)")
+
+# arrange by p-value
+beh_cond_part_early_results <- beh_cond_part_early_results %>% 
+  arrange(`Pr(>|z|)`)
+```
+
+```{r}
+# replace models with insignificant interactions with model without the interaction
+
+beh_cond_part_early_mod[[2]][[1]] <- glmmTMB(Next_Yr_Calf_Present ~ 
+                                               Current_Calf_Present + I(avg_biom^2) + 
+                                               avg_mosq_herd + avg_biom_herd,
+                            data = early_beh,
+                            family = binomial(link = "logit"))
+
+beh_cond_part_early_mod[[2]][[2]] <- glmmTMB(Next_Yr_Calf_Present ~ 
+                                               Current_Calf_Present + I(avg_biom^2) + 
+                                               avg_mosq_herd + avg_dn_herd,
+                            data = early_beh,
+                            family = binomial(link = "logit"))
+
+beh_cond_part_early_mod[[3]][[2]] <- glmmTMB(Next_Yr_Calf_Present ~
+                                               Current_Calf_Present + avg_dn + 
+                                               avg_mosq_herd + avg_dn_herd,
+                            data = early_beh,
+                            family = binomial(link = "logit"))
+
+beh_cond_part_early_mod[[4]][[1]] <- glmmTMB(Next_Yr_Calf_Present ~ 
+                                               Current_Calf_Present + avg_de + 
+                                               avg_mosq_herd + avg_biom_herd,
+                            data = early_beh,
+                            family = binomial(link = "logit"))
+
+beh_cond_part_early_mod[[4]][[2]] <- glmmTMB(Next_Yr_Calf_Present ~ 
+                                               Current_Calf_Present + avg_de + 
+                                               avg_mosq_herd + avg_dn_herd,
+                            data = early_beh,
+                            family = binomial(link = "logit"))
+
+beh_cond_part_early_mod[[5]][[1]] <- glmmTMB(Next_Yr_Calf_Present ~ 
+                                               Current_Calf_Present + 
+                                               resource_vol + avg_mosq_herd + 
+                                               avg_biom_herd,
+                            data = early_beh,
+                            family = binomial(link = "logit"))
+
+beh_cond_part_early_mod[[5]][[2]] <- glmmTMB(Next_Yr_Calf_Present ~ 
+                                               Current_Calf_Present + 
+                                               resource_vol + avg_mosq_herd + 
+                                               resource_vol * avg_dn_herd +
+                                               resource_vol : avg_dn +
+                                               avg_de,
+                            data = early_beh,
+                            family = binomial(link = "logit"))
+
+beh_cond_part_early_mod[[6]][[1]] <- glmmTMB(Next_Yr_Calf_Present ~ 
+                                               Current_Calf_Present + avg_dist_m + 
+                                               avg_mosq_herd + avg_biom_herd,
+                            data = early_beh,
+                            family = binomial(link = "logit"))
+
+beh_cond_part_early_mod[[6]][[2]] <- glmmTMB(Next_Yr_Calf_Present ~
+                                               Current_Calf_Present + avg_dist_m + 
+                                               avg_mosq_herd + avg_dn_herd,
+                            data = early_beh,
+                            family = binomial(link = "logit"))
+
+beh_cond_part_early_mod[[7]][[1]] <- glmmTMB(Next_Yr_Calf_Present ~
+                                               Current_Calf_Present + avg_sinuosity + 
+                                               avg_mosq_herd + avg_biom_herd,
+                            data = early_beh,
+                            family = binomial(link = "logit"))
+
+beh_cond_part_early_mod[[7]][[2]] <- glmmTMB(Next_Yr_Calf_Present ~
+                                               Current_Calf_Present + avg_sinuosity + 
+                                               avg_mosq_herd + avg_dn_herd,
+                            data = early_beh,
+                            family = binomial(link = "logit"))
+
+beh_cond_part_early_mod[[8]][[1]] <- glmmTMB(Next_Yr_Calf_Present ~
+                                               Current_Calf_Present + HR_area_km2 + 
+                                               avg_mosq_herd + avg_biom_herd,
+                            data = early_beh,
+                            family = binomial(link = "logit"))
+
+beh_cond_part_early_mod[[8]][[2]] <- glmmTMB(Next_Yr_Calf_Present ~ 
+                                               Current_Calf_Present + 
+                                               HR_area_km2 * avg_mosq_herd + 
+                                               avg_dn_herd,
+                            data = early_beh,
+                            family = binomial(link = "logit"))
+
+
+beh_cond_part_early_mod[[9]][[1]] <- glmmTMB(Next_Yr_Calf_Present ~ 
+                                               Current_Calf_Present + centroid_x + 
+                                               avg_mosq_herd + avg_biom_herd,
+                            data = early_beh,
+                            family = binomial(link = "logit"))
+
+beh_cond_part_early_mod[[9]][[2]] <- glmmTMB(Next_Yr_Calf_Present ~
+                                               Current_Calf_Present + centroid_x + 
+                                               avg_mosq_herd + avg_dn_herd,
+                            data = early_beh,
+                            family = binomial(link = "logit"))
+
+beh_cond_part_early_mod[[10]][[1]] <- glmmTMB(Next_Yr_Calf_Present ~ 
+                                               Current_Calf_Present + centroid_y + 
+                                               avg_mosq_herd + avg_biom_herd,
+                            data = early_beh,
+                            family = binomial(link = "logit"))
+
+beh_cond_part_early_mod[[10]][[2]] <- glmmTMB(Next_Yr_Calf_Present ~ 
+                                               Current_Calf_Present + centroid_y + 
+                                               avg_mosq_herd + avg_dn_herd,
+                            data = early_beh,
+                            family = binomial(link = "logit"))
+
+beh_cond_part_early_mod[[11]][[1]] <- glmmTMB(Next_Yr_Calf_Present ~ 
+                                               Current_Calf_Present + 
+                                                move_vol + avg_biom_herd +
+                                                avg_mosq_herd +
+                                                 avg_dist_m +
+                                                 avg_sinuosity,
+                            data = early_beh,
+                            family = binomial(link = "logit"))
+
+beh_cond_part_early_mod[[11]][[2]] <- glmmTMB(Next_Yr_Calf_Present ~ 
+                                               Current_Calf_Present + 
+                                                move_vol + avg_mosq_herd + 
+                                                 avg_dn_herd +
+                                                 avg_dist_m +
+                                                avg_sinuosity,
+                            data = early_beh,
+                            family = binomial(link = "logit"))
+```
+
+
+```{r}
+# AIC table
+### first, rearrange model list
+beh_cond_early_aic_mod <- list()
+for (parent in names(beh_cond_part_early_mod)) {
+  for (child in names(beh_cond_part_early_mod[[parent]])) {
+    beh_cond_early_aic_mod[[paste(parent, child, sep = " ")]] <- beh_cond_part_early_mod[[parent]][[child]]
+  }
+}
+
+# add null model to each model set
+beh_cond_early_aic_mod[[23]] <- glmmTMB(Next_Yr_Calf_Present ~ Current_Calf_Present + avg_biom_herd + avg_mosq_herd,
+                            data = early_beh,
+                            family = binomial(link = "logit"))
+
+names(beh_cond_early_aic_mod)[[23]] <- "NULL_biom"
+
+beh_cond_early_aic_mod[[24]] <- glmmTMB(Next_Yr_Calf_Present ~ Current_Calf_Present + avg_dn_herd + avg_mosq_herd,
+                            data = early_beh,
+                            family = binomial(link = "logit"))
+
+names(beh_cond_early_aic_mod)[[24]] <- "NULL_dn"
+
+```
+
+```{r}
+# now, generate AIC table for each model set
+ # Generate AIC table 
+  aic_table <- MuMIn::model.sel(beh_cond_early_aic_mod)
+  
+  # extract model formula
+forms <- map_chr(beh_cond_early_aic_mod, ~as.character(formula(.x))[[3]])
+forms <- data.frame(forms = forms, model = names(beh_cond_early_aic_mod))
+  
+# Add model names 
+  aic_df_beh_cond_early <- as.data.frame(aic_table) %>%
+    tibble::rownames_to_column("model")
+  
+  # join with formula
+  aic_df_beh_cond_early <- left_join(aic_df_beh_cond_early, forms)
+
+## subset to variables of interest
+aic_df_beh_cond_early <- aic_df_beh_cond_early %>% 
+  select(model, forms, df, logLik, AICc, delta)
+
+## then, round values
+aic_df_beh_cond_early <- aic_df_beh_cond_early %>%
+  mutate(across(where(is.numeric), ~round(.x, 3)))
+
+# format it as a flextable
+ft <- flextable(aic_df_beh_cond_early)
+
+# autofit column widths
+ft <- autofit(ft)
+
+# create a Word document and add the table
+doc <- read_docx() %>%
+  body_add_par("early behavior x condition parturition AIC", style = "heading 1") %>%
+  body_add_flextable(ft)
+
+# save the Word document
+print(doc, target = "./Code_Output/early_behavior_cond_part_AIC.docx")
+```
+
+```{r}
+# save models that are better than NULL for plotting
+# save top models (delta AIC < NULL) for plotting
+   
+ delta_null <- aic_df_beh_cond_early %>% 
+    filter(str_detect(model, "NULL")) %>% 
+  slice_min(delta) %>% 
+    select(delta)
+  
+  top_aic_mod <- aic_df_beh_cond_early %>% 
+    filter(delta < delta_null$delta)
+  
+# pull models
+  top_models <- beh_cond_early_aic_mod[top_aic_mod$model]
+
+
+# save models
+saveRDS(top_models, "./Code_Output/early_cond_part_sig_models.rds")
+```
+
+### Late summer
+Effect of breadths & averages of late summer behaviors on the following year's parturition
+
+```{r}
+# check correlation of late summer behaviors
+beh_metrics <- c("avg_biom", "I(avg_biom^2)", "avg_dn", "avg_de", "resource_vol",
+                 "avg_dist_m", "avg_sinuosity", "HR_area_km2", "centroid_x",
+               "centroid_y", "move_vol")
+
+late_beh_corr = cor(late_beh %>% select(all_of(c("avg_biom", "avg_dn", 
+                                               "avg_de", "resource_vol",
+                                               "avg_dist_m", "avg_sinuosity", 
+                                               "HR_area_km2", "centroid_x",
+                                               "centroid_y", "move_vol"))))
+corrplot(late_beh_corr, method = 'number', number.cex = 0.7) 
+```
+
+```{r}
+# loop through behavior metrics, running logistic model
+beh_part_late_mod <- vector(mode = "list", length = length(beh_metrics))
+
+for(i in 1:length(beh_metrics)){
+  print(i)
+  
+
+  form <- as.formula(paste("Next_Yr_Calf_Present ~ Current_Calf_Present + ", beh_metrics[[i]]))
+  
+  beh_part_late_mod[[i]] <- glmmTMB(formula = form,
+                            data = late_beh,
+                            family = binomial(link = "logit"))
+  
+}
+
+names(beh_part_late_mod) <- beh_metrics
+```
+
+```{r}
+# compile model results into a dataframe
+beh_part_late_results <- vector(mode = "list", length = length(beh_part_late_mod))
+
+for(i in 1:length(beh_part_late_mod)){
+  beh_part_late_results[[i]] <- as.data.frame(summary(beh_part_late_mod[[i]])$coefficients$cond)
+  beh_part_late_results[[i]]$predictor <- rownames(beh_part_late_results[[i]])
+  rownames(beh_part_late_results[[i]]) <- NULL
+  }
+  
+beh_part_late_results <- bind_rows(beh_part_late_results)
+
+# filter out intercept
+beh_part_late_results <- beh_part_late_results %>% 
+  filter(predictor != "(Intercept)")
+
+# arrange by p-value
+beh_part_late_results <- beh_part_late_results %>% 
+  arrange(`Pr(>|z|)`) 
+```
+
+### Behavior x annual forage & insect conditions
+Effect of breadths & averages of late summer behaviors interacted with forage & insect conditions on the following year's parturition
+
+Conditions used: average and SD of biomass and fly indices
+
+```{r}
+# name behavior metrics and conditions to loop over
+beh_metrics <- c("avg_biom", "I(avg_biom^2)", "avg_dn", "avg_de", "resource_vol",
+                 "avg_dist_m", "avg_sinuosity", "HR_area_km2", "centroid_x",
+               "centroid_y", "move_vol")
+cond_metrics <- c("avg_biom_herd", "avg_de_herd")
+```
+
+```{r}
+# loop through behavior metrics, running logistic model
+beh_cond_part_late_mod <- vector(mode = "list", length = length(beh_metrics))
+
+for(i in 1:length(beh_metrics)){
+  print(i)
+  beh_cond_part_late_mod[[i]] <- vector(mode = "list", length = length(cond_metrics))
+  
+  for(j in 1:length(cond_metrics)){
+  
+
+   form <- as.formula(paste("Next_Yr_Calf_Present ~ Current_Calf_Present +", beh_metrics[[i]], " * avg_fly_herd + ", beh_metrics[[i]], " * ", cond_metrics[[j]]))
+  
+  beh_cond_part_late_mod[[i]][[j]] <- glmmTMB(formula = form,
+                            data = late_beh,
+                            family = binomial(link = "logit"))
+  
+  }
+  
+  names(beh_cond_part_late_mod[[i]]) <- cond_metrics
+}
+
+names(beh_cond_part_late_mod) <- beh_metrics
+```
+
+```{r}
+# replace models with insignificant interactions with model without the interaction
+beh_cond_part_late_mod[[1]][[2]] <- glmmTMB(Next_Yr_Calf_Present ~ 
+                                               Current_Calf_Present + 
+                                              avg_biom * avg_fly_herd + 
+                                              avg_de_herd,
+                            data = late_beh,
+                            family = binomial(link = "logit"))
+
+beh_cond_part_late_mod[[2]][[1]] <- glmmTMB(Next_Yr_Calf_Present ~ 
+                                               Current_Calf_Present + 
+                                              I(avg_biom^2) + 
+                                              avg_fly_herd + 
+                                              avg_biom_herd,
+                            data = late_beh,
+                            family = binomial(link = "logit"))
+
+beh_cond_part_late_mod[[2]][[2]] <- glmmTMB(Next_Yr_Calf_Present ~ 
+                                               Current_Calf_Present + 
+                                              I(avg_biom^2) + 
+                                              avg_fly_herd + 
+                                              avg_de_herd,
+                            data = late_beh,
+                            family = binomial(link = "logit"))
+
+beh_cond_part_late_mod[[3]][[1]] <- glmmTMB(Next_Yr_Calf_Present ~
+                                               Current_Calf_Present + 
+                                              avg_dn * avg_fly_herd +
+                                              avg_biom_herd,
+                            data = late_beh,
+                            family = binomial(link = "logit"))
+
+beh_cond_part_late_mod[[3]][[2]] <- glmmTMB(Next_Yr_Calf_Present ~
+                                               Current_Calf_Present + 
+                                              avg_dn * avg_fly_herd + 
+                                              avg_de_herd,
+                            data = late_beh,
+                            family = binomial(link = "logit"))
+
+beh_cond_part_late_mod[[4]][[1]] <- glmmTMB(Next_Yr_Calf_Present ~ 
+                                               Current_Calf_Present + 
+                                              avg_de + avg_fly_herd + 
+                                              avg_biom_herd,
+                            data = late_beh,
+                            family = binomial(link = "logit"))
+
+beh_cond_part_late_mod[[4]][[2]] <- glmmTMB(Next_Yr_Calf_Present ~ 
+                                               Current_Calf_Present + 
+                                              avg_de + avg_fly_herd + 
+                                              avg_de_herd,
+                            data = late_beh,
+                            family = binomial(link = "logit"))
+
+beh_cond_part_late_mod[[5]][[1]] <- glmmTMB(Next_Yr_Calf_Present ~ 
+                                               Current_Calf_Present + 
+                                              resource_vol * avg_fly_herd + 
+                                              resource_vol *  avg_biom_herd +
+                                               resource_vol * avg_biom,
+                            data = late_beh,
+                            family = binomial(link = "logit"))
+
+beh_cond_part_late_mod[[5]][[2]] <- glmmTMB(Next_Yr_Calf_Present ~ 
+                                               Current_Calf_Present + 
+                                              resource_vol * avg_fly_herd +
+                                              resource_vol * avg_de_herd +
+                                              resource_vol * avg_biom,
+                            data = late_beh,
+                            family = binomial(link = "logit"))
+
+
+beh_cond_part_late_mod[[6]][[1]] <- glmmTMB(Next_Yr_Calf_Present ~ 
+                                               Current_Calf_Present + 
+                                              avg_dist_m + 
+                                              avg_fly_herd + 
+                                              avg_biom_herd,
+                            data = late_beh,
+                            family = binomial(link = "logit"))
+
+beh_cond_part_late_mod[[6]][[2]] <- glmmTMB(Next_Yr_Calf_Present ~ 
+                                               Current_Calf_Present + 
+                                              avg_dist_m + 
+                                              avg_fly_herd + 
+                                              avg_de_herd,
+                            data = late_beh,
+                            family = binomial(link = "logit"))
+
+
+beh_cond_part_late_mod[[8]][[1]] <- glmmTMB(Next_Yr_Calf_Present ~ 
+                                               Current_Calf_Present + 
+                                              HR_area_km2 + avg_biom_herd + 
+                                              avg_fly_herd,
+                            data = late_beh,
+                            family = binomial(link = "logit"))
+
+beh_cond_part_late_mod[[8]][[2]] <- glmmTMB(Next_Yr_Calf_Present ~ 
+                                               Current_Calf_Present + 
+                                              HR_area_km2 + avg_de_herd + 
+                                              avg_fly_herd,
+                            data = late_beh,
+                            family = binomial(link = "logit"))
+
+beh_cond_part_late_mod[[9]][[1]] <- glmmTMB(Next_Yr_Calf_Present ~ 
+                                               Current_Calf_Present + 
+                                              centroid_x + avg_biom_herd + 
+                                              avg_fly_herd,
+                            data = late_beh,
+                            family = binomial(link = "logit"))
+
+beh_cond_part_late_mod[[9]][[2]] <- glmmTMB(Next_Yr_Calf_Present ~ 
+                                               Current_Calf_Present + 
+                                              centroid_x + avg_de_herd + 
+                                              avg_fly_herd,
+                            data = late_beh,
+                            family = binomial(link = "logit"))
+
+beh_cond_part_late_mod[[10]][[1]] <- glmmTMB(Next_Yr_Calf_Present ~ 
+                                               Current_Calf_Present + 
+                                              centroid_y * avg_biom_herd + 
+                                              avg_fly_herd,
+                            data = late_beh,
+                            family = binomial(link = "logit"))
+
+
+beh_cond_part_late_mod[[11]][[1]] <- glmmTMB(Next_Yr_Calf_Present ~
+                                               Current_Calf_Present + 
+                                             move_vol + avg_biom_herd +
+                                               avg_fly_herd + 
+                                               avg_sinuosity,
+                            data = late_beh,
+                            family = binomial(link = "logit"))
+
+beh_cond_part_late_mod[[11]][[2]] <- glmmTMB(Next_Yr_Calf_Present ~ 
+                                               Current_Calf_Present + 
+                                             move_vol + avg_de_herd + 
+                                              avg_fly_herd + 
+                                               avg_sinuosity,
+                            data = late_beh,
+                            family = binomial(link = "logit"))
+```
+
+
+```{r}
+# compile model results into a dataframe
+beh_cond_part_late_results <- vector(mode = "list", length = length(beh_cond_part_late_mod))
+
+for(i in 1:length(beh_cond_part_late_mod)){
+  beh_cond_part_late_results[[i]] <- vector(mode = "list", 
+                                       length = length(beh_cond_part_late_mod[[i]]))
+  
+  for(j in 1:length(beh_cond_part_late_mod[[i]])){
+
+      
+  beh_cond_part_late_results[[i]][[j]] <- as.data.frame(summary(beh_cond_part_late_mod[[i]][[j]])$coefficients$cond)
+  beh_cond_part_late_results[[i]][[j]]$beh <- names(beh_cond_part_late_mod)[[i]]
+  beh_cond_part_late_results[[i]][[j]]$cond <- names(beh_cond_part_late_mod[[i]])[[j]]
+  beh_cond_part_late_results[[i]][[j]]$predictor <- rownames(beh_cond_part_late_results[[i]][[j]])
+  rownames(beh_cond_part_late_results[[i]][[j]]) <- NULL
+    }
+    beh_cond_part_late_results[[i]] <- bind_rows(beh_cond_part_late_results[[i]])
+  }
+
+
+beh_cond_part_late_results <- bind_rows(beh_cond_part_late_results)
+
+# filter out intercept
+beh_cond_part_late_results <- beh_cond_part_late_results %>% 
+  filter(predictor != "(Intercept)")
+
+# arrange by p-value
+beh_cond_part_late_results <- beh_cond_part_late_results %>% 
+  arrange(`Pr(>|z|)`)
+```
+
+```{r}
+# AIC table
+### first, rearrange model list
+beh_cond_late_aic_mod <- list()
+for (parent in names(beh_cond_part_late_mod)) {
+  for (child in names(beh_cond_part_late_mod[[parent]])) {
+    beh_cond_late_aic_mod[[paste(parent, child, sep = " ")]] <- beh_cond_part_late_mod[[parent]][[child]]
+  }
+}
+
+# add null model to each model set
+beh_cond_late_aic_mod[[23]] <- glmmTMB(Next_Yr_Calf_Present ~ Current_Calf_Present + avg_biom_herd + avg_fly_herd,
+                            data = late_beh,
+                            family = binomial(link = "logit"))
+
+names(beh_cond_late_aic_mod)[[23]] <- "NULL_biom"
+
+beh_cond_late_aic_mod[[24]] <- glmmTMB(Next_Yr_Calf_Present ~ Current_Calf_Present + avg_de_herd + avg_fly_herd,
+                            data = late_beh,
+                            family = binomial(link = "logit"))
+
+names(beh_cond_late_aic_mod)[[24]] <- "NULL_de"
+
+```
+
+```{r}
+# now, generate AIC table for each model set
+ # Generate AIC table 
+  aic_table <- MuMIn::model.sel(beh_cond_late_aic_mod)
+  
+  # extract model formula
+forms <- map_chr(beh_cond_late_aic_mod, ~as.character(formula(.x))[[3]])
+forms <- data.frame(forms = forms, model = names(beh_cond_late_aic_mod))
+  
+# Add model names 
+  aic_df_beh_cond_late <- as.data.frame(aic_table) %>%
+    tibble::rownames_to_column("model")
+  
+  # join with formula
+  aic_df_beh_cond_late <- left_join(aic_df_beh_cond_late, forms)
+
+## subset to variables of interest
+aic_df_beh_cond_late <- aic_df_beh_cond_late %>% 
+  select(model, forms, df, logLik, AICc, delta)
+
+
+## then, round values
+aic_df_beh_cond_late <- aic_df_beh_cond_late %>%
+  mutate(across(where(is.numeric), ~round(.x, 3)))
+
+# format it as a flextable
+ft <- flextable(aic_df_beh_cond_late)
+
+# autofit column widths
+ft <- autofit(ft)
+
+# create a Word document and add the table
+doc <- read_docx() %>%
+  body_add_par("late behavior x condition parturition AIC", style = "heading 1") %>%
+  body_add_flextable(ft)
+
+# save the Word document
+print(doc, target = "./Code_Output/late_behavior_cond_part_AIC.docx")
+```
+
+```{r}
+# save models that are better than NULL for plotting
+# save top models (delta AIC < NULL) for plotting
+   
+ delta_null <- aic_df_beh_cond_late %>% 
+    filter(str_detect(model, "NULL")) %>%
+  slice_min(delta) %>% 
+    select(delta)
+  
+  top_aic_mod <- aic_df_beh_cond_late %>% 
+    filter(delta < delta_null$delta)
+  
+# pull models
+  top_models <- beh_cond_late_aic_mod[top_aic_mod$model]
+
+
+# save models
+saveRDS(top_models, "./Code_Output/late_cond_part_sig_models.rds")
+```
