@@ -22,9 +22,9 @@ setwd("~/OneDrive - University of Wyoming/Documents/USGS_AK_Caribou/")
 
 ```{r}
 # early behavior data
-early_beh <- readRDS("./Code_Output/early_beh_LMM_data.rds")
+early_beh <- read.csv("./Code_Output/early_behavior_fitness.csv")
 
-# early behavior models 
+# early behavior models (output from behavior model step 1 code)
 early_beh_mod <- readRDS("./Code_Output/early_behavior_LMMs.rds")
 
 ```
@@ -213,9 +213,9 @@ predictor = case_when(
 
 ```{r}
 # late behavior data
-late_beh <- readRDS("./Code_Output/late_beh_LMM_data.rds")
+late_beh <- read.csv("./Code_Output/late_behavior_fitness.csv")
 
-# late behavior models 
+# late behavior models (output from behavior model step 1 code)
 late_beh_mod <- readRDS("./Code_Output/late_behavior_LMMs.rds")
 ```
 
@@ -435,13 +435,18 @@ space_data_early <- early_beh_pred %>% filter(response_type == "Space use") %>%
                                                             "Forage quality",
                                                             "Insect indices")))
 
-# add dummy row for forage quality color to show
-dummy <- data.frame(predictor_type = "Forage quality", response = "Seasonal range area (km^2)")
+# add dummy row for forage quality color & longitude to show
+dummy <- data.frame(predictor_type = "Forage quality", response = "Seasonal range longitude", label = "No effect", predictor_value = 0, fit = -148)
 space_data_early <- bind_rows(space_data_early, dummy) %>% 
   mutate(response = factor(response, levels = c("Seasonal range longitude",
                                                 "Seasonal range latitude",
                                                 "Seasonal range area (km^2)"),
                            ordered = TRUE))
+
+space_data_early <- space_data_early %>% 
+  group_by(response) %>% 
+  mutate(mean_fit = mean(fit, na.rm = T)) %>% 
+  ungroup()
 
 plot_early_space <- ggplot(space_data_early) +
     geom_line(aes(x = predictor_value, y = fit,
@@ -451,6 +456,7 @@ plot_early_space <- ggplot(space_data_early) +
                     ymax = fit + se.fit,
                     fill = predictor_type), 
                 alpha = 0.2) +
+  geom_text(aes(x = 0, y = mean_fit, label = label), size = 5) +
   facet_grid(rows = vars(response),
              scales = "free_y",
              switch = "y") +
@@ -502,9 +508,9 @@ plot_late_space <- ggplot(space_data_late) +
           legend.position = "bottom",
           legend.text = element_text(size = 8))
 
-plot_space <- ((plot_spacer() / (plot_early_space + labs(title = "A. Early summer") + 
-                                   theme(title = element_text(size = 8))) +
-  plot_layout(heights = c(0.4, 1))) | (plot_late_space + labs(title = "B. Late summer") +
+# combine plots
+plot_space <- (((plot_early_space + labs(title = "A. Early summer") + 
+                                   theme(title = element_text(size = 8)))) | (plot_late_space + labs(title = "B. Late summer") +
                                          theme(title = element_text(size = 8)))) +
   plot_layout(guides = "collect") & theme(legend.position = "bottom")
 

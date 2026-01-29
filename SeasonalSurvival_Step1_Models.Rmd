@@ -19,103 +19,13 @@ library(readxl)
 setwd("~/OneDrive - University of Wyoming/Documents/USGS_AK_Caribou/")
 ```
 
-# Load and prep data
+# Load data
 
 ```{r}
-# early and late summer behaviors
-early_beh <- readRDS("./Code_Output/early_beh_LMM_data.rds")
-late_beh <- readRDS("./Code_Output/late_beh_LMM_data.rds")
+# load early and late summer behavior and fitness data
+early_beh <- read.csv("./Code_Output/early_behavior_fitness.csv")
+late_beh <- read.csv("./Code_Output/late_behavior_fitness.csv")
 
-# survival
- surv <- read_excel("./Data/IndividualCaribou.xlsx")
-```
-
-```{r}
-# reformat survival to indicate whether an animal lives to the start of each summer (June 1)
-surv_summ <-surv %>%
-  mutate(
-    capture_date = as.Date(`Initial Capture Date (AKT)`),
-    death_date   = as.Date(`Death Date (UTC)`),
-    censor_date  = as.Date(`Censor Date (UTC)`)
-  ) %>%
-  rowwise() %>%
-  mutate(
-    # last date we know something about the animal
-    end_date = coalesce(death_date, censor_date, Sys.Date())
-  ) %>%
-  ungroup() %>%
-  mutate(
-    start_year = year(capture_date),
-    end_year   = if_else(as.Date(end_date) <= as.Date(paste(year(end_date), "06-01", sep = "-")),
-                         year(end_date), year(end_date) + 1)  # include 1st death June
-  ) %>%
-  rowwise() %>%
-  mutate(years = list(start_year:end_year)) %>%
-  unnest(years) %>%
-  ungroup() %>%
-  mutate(june1 = as.Date(paste0(years, "-06-01"))) %>%
-  # only consider June 1 after capture
-  filter(june1 >= capture_date) %>%
-  mutate(alive_june1 = case_when(
-      # only assign 0 if death_date exists and June 1 comes after it
-      !is.na(death_date) & june1 > death_date ~ 0,
-      june1 <= end_date ~ 1,
-      TRUE ~ NA_integer_
-    ))
-  
-
-# select variables of interest
-surv_summ <- surv_summ %>% 
-  select(`Animal Id`, years, Status, capture_date, death_date, censor_date, start_year, end_year, end_date,
-         alive_june1)
-
-# add animal_year of prior year to match with behavior data of prior year
-surv_summ <- surv_summ %>% 
-  mutate(animal_yr = paste(`Animal Id`, years - 1, sep = "_"))
-
-```
-
-```{r}
-# combine behavior and fitness data
-early_beh <- left_join(early_beh, surv_summ)
-late_beh <- left_join(late_beh, surv_summ)
-```
-
-```{r}
-# scale and center behaviors so they are on similar scales as conditions
-behaviors <- c("avg_biom", "avg_dn", "avg_de", "resource_vol",
-               "avg_dist_m", "avg_sinuosity", "HR_area_km2", "centroid_x",
-               "centroid_y", "move_vol")
-early_beh_sc <- early_beh %>% 
-  mutate(across(all_of(behaviors), ~as.numeric(scale(.))))
-
-late_beh_sc <- late_beh %>% 
-  mutate(across(all_of(behaviors), ~as.numeric(scale(.))))
-
-```
-
-```{r}
-# combine scaled & unscaled data together, for plots in step 2
-early_beh <- early_beh %>%
-  rename_with(~ paste0(.x, "_unscaled"),
-              c("avg_biom", "avg_dn", "avg_de", "resource_vol",
-                "avg_dist_m", "avg_sinuosity", "HR_area_km2", 
-                "centroid_x", "centroid_y", "move_vol"))
-
-late_beh <- late_beh %>%
-  rename_with(~ paste0(.x, "_unscaled"),
-              c("avg_biom", "avg_dn", "avg_de", "resource_vol",
-                "avg_dist_m", "avg_sinuosity", "HR_area_km2", 
-                "centroid_x", "centroid_y", "move_vol"))
-
-early_beh <- left_join(early_beh, early_beh_sc)
-late_beh <- left_join(late_beh, late_beh_sc)
-```
-
-```{r}
-# save data used in models
-saveRDS(early_beh, "./Code_Output/early_beh_surv_data.rds")
-saveRDS(late_beh, "./Code_Output/late_beh_surv_data.rds")
 ```
 
 ## Seasonal behaviors
@@ -388,7 +298,6 @@ beh_cond_surv_early_mod[[11]][[2]] <- glmmTMB(alive_june1 ~ move_vol +
 
 ```{r}
 # AIC table
-## first, rearrange model list, so that models are in a list per response (survuritient or post-calf present)
 ## first, rearrange model list
 beh_cond_early_aic_mod <- list()
 for (parent in names(beh_cond_surv_early_mod)) {
@@ -411,33 +320,103 @@ beh_cond_early_aic_mod[[24]] <- glmmTMB(alive_june1 ~ avg_dn_herd + avg_mosq_her
 
 names(beh_cond_early_aic_mod)[[24]] <- "NULL_dn"
 ```
-
+ 
 ```{r}
-  # Generate AIC table 
-  aic_table <- MuMIn::model.sel(beh_cond_early_aic_mod)
+# now, generate AIC table for each model set - per behavior type & environ conditions (forage quality vs forage quantity)
+grp <- case_when(
+  str_detect(names(beh_cond_early_aic_mod), "biom_herd") & 
+    str_detect(names(beh_cond_early_aic_mod), "centroid|HR") ~ "space_quant",
+  str_detect(names(beh_cond_early_aic_mod), "dn_herd|de_herd") & 
+    str_detect(names(beh_cond_early_aic_mod), "centroid|HR") ~ "space_qual",
+  str_detect(names(beh_cond_early_aic_mod), "biom_herd") & 
+    str_detect(names(beh_cond_early_aic_mod), "move|dist|sinuos") ~ "move_quant",
+  str_detect(names(beh_cond_early_aic_mod), "dn_herd|de_herd") & 
+    str_detect(names(beh_cond_early_aic_mod), "move|dist|sinuos") ~ "move_qual",
+  str_detect(names(beh_cond_early_aic_mod), "biom_herd") & 
+    str_detect(names(beh_cond_early_aic_mod), "avg_biom |avg_dn |resource_vol|avg_biom\\^2") ~ "for_quant",
+  str_detect(names(beh_cond_early_aic_mod), "dn_herd|de_herd") & 
+    str_detect(names(beh_cond_early_aic_mod), "avg_biom |avg_dn |resource_vol|avg_biom\\^2") ~ "for_qual",
+  TRUE ~ names(beh_cond_early_aic_mod)
+)
 
-# extract model formula
-forms <- map_chr(beh_cond_early_aic_mod, ~as.character(formula(.x))[[3]])
-forms <- data.frame(forms = forms, model = names(beh_cond_early_aic_mod))
+beh_cond_early_aic_mod <- split(beh_cond_early_aic_mod, grp)
+null_mods <- beh_cond_early_aic_mod[str_detect(names(beh_cond_early_aic_mod), "NULL")]
+beh_cond_early_aic_mod[str_detect(names(beh_cond_early_aic_mod), "NULL")] <- NULL
+beh_cond_early_aic_mod[str_detect(names(beh_cond_early_aic_mod), "avg_de")] <- NULL # remove dig energy use behavior from early summer AIC
+
+aic_table <- list()
+
+for(i in 1:length(beh_cond_early_aic_mod)){
+ # Generate AIC table for each group
+  if(str_detect(names(beh_cond_early_aic_mod)[[i]], "quant")){
+    aic_table[[i]] <- MuMIn::model.sel(c(beh_cond_early_aic_mod[[i]],
+                                              null_mods[["NULL_biom"]]))
+    
+      # extract model formula
+      forms <- map_chr(c(beh_cond_early_aic_mod[[i]],
+                          null_mods[["NULL_biom"]]), ~as.character(formula(.x))[[3]])
+      forms <- data.frame(forms = forms, model = names(forms))
   
-# Add model names 
-  aic_df_beh_cond_early <- as.data.frame(aic_table) %>%
-    tibble::rownames_to_column("model")
+      # Add model names 
+        aic_table[[i]] <- as.data.frame(aic_table[[i]]) %>%
+          tibble::rownames_to_column("model")
   
-  # join with formula
-  aic_df_beh_cond_early <- left_join(aic_df_beh_cond_early, forms)
+      # join with formula
+      aic_table[[i]] <- left_join(aic_table[[i]], forms)
+      
+  }else{
+    aic_table[[i]] <- MuMIn::model.sel(c(beh_cond_early_aic_mod[[i]],
+                                            null_mods[["NULL_dn"]]))
+    
+    # extract model formula
+      forms <- map_chr(c(beh_cond_early_aic_mod[[i]],
+                          null_mods[["NULL_dn"]]), ~as.character(formula(.x))[[3]])
+      forms <- data.frame(forms = forms, model = names(forms))
+  
+      # Add model names 
+        aic_table[[i]] <- as.data.frame(aic_table[[i]]) %>%
+          tibble::rownames_to_column("model")
+  
+      # join with formula
+      aic_table[[i]] <- left_join(aic_table[[i]], forms)
+  }
+}
+  
+aic_df_beh_cond_early <- bind_rows(aic_table)  
 
 ## subset to variables of interest
 aic_df_beh_cond_early <- aic_df_beh_cond_early %>% 
-  select(model, forms, df, logLik, AICc, delta)
+  select(forms, df, logLik, AICc, delta)
 
 ## then, round values
 aic_df_beh_cond_early <- aic_df_beh_cond_early %>%
   mutate(across(where(is.numeric), ~round(.x, 3)))
-```
 
-```{r}
-# output word docx AIC tables
+# make model formulas pretty
+aic_df_beh_cond_early <- aic_df_beh_cond_early %>% 
+  mutate(
+    forms = str_replace_all(forms, "avg_biom_herd", "forage biomass"),
+    forms = str_replace_all(forms, "avg_dn_herd", "dig. nitrogen"),
+    forms = str_replace_all(forms, "avg_mosq_herd", "mosq. index"),
+    forms = str_replace_all(forms, "avg_biom", "forage biomass use"),
+    forms = str_replace_all(forms, "resource_vol", "forage use breadth"),
+    forms = str_replace_all(forms, "avg_dn", "dig. nitrogen use"),
+    forms = str_replace_all(forms, "avg_de", "dig. energy use"),
+    forms = str_replace_all(forms, "avg_sinuosity", "daily sinuosity"),
+    forms = str_replace_all(forms, "avg_dist_m", "daily displacement"),
+    forms = str_replace_all(forms, "move_vol", "movement breadth"),
+    forms = str_replace_all(forms, "HR_area_km2", "seasonal range area"),
+    forms = str_replace_all(forms, "centroid_x", "seasonal range longitude"),
+    forms = str_replace_all(forms, "centroid_y", "seasonal range latitude")
+  )
+
+aic_df_beh_cond_early <- aic_df_beh_cond_early %>% mutate(forms = str_remove(forms, "Current_Calf_Present \\+\\ "))
+
+aic_df_beh_cond_early <- aic_df_beh_cond_early %>% 
+  mutate(forms = case_when(forms == "forage biomass + mosq. index" ~ "forage biomass + mosq. index (Null model, forage quantity)",
+                           forms == "dig. nitrogen + mosq. index" ~ "dig. nitrogen + mosq. index (Null model, forage quality)",
+                           TRUE ~ forms))
+
 # format it as a flextable
 ft <- flextable(aic_df_beh_cond_early)
 
@@ -446,7 +425,7 @@ ft <- autofit(ft)
 
 # create a Word document and add the table
 doc <- read_docx() %>%
-  body_add_par("Early behavior x condition survival AIC", style = "heading 1") %>%
+  body_add_par("early behavior x condition survival AIC", style = "heading 1") %>%
   body_add_flextable(ft)
 
 # save the Word document
@@ -454,18 +433,27 @@ print(doc, target = "./Code_Output/early_behavior_cond_surv_AIC.docx")
 ```
 
 ```{r}
-# save top models (delta AIC < NULL - 1) for plotting
-   
- delta_null <- aic_df_beh_cond_early %>% 
+# save models that are better than NULL for plotting
+# save top models (delta AIC < NULL) for plotting
+top_models <- list()
+
+for(i in 1:length(aic_table)){
+ delta_null <- aic_table[[i]] %>% 
     filter(str_detect(model, "NULL")) %>% 
   slice_min(delta) %>% 
     select(delta)
   
-  top_aic_mod <- aic_df_beh_cond_early %>% 
-    filter(delta < (delta_null$delta-1))
+  top_aic_mod <- aic_table[[i]] %>% 
+    filter(delta < delta_null$delta)
   
 # pull models
-  top_models <- beh_cond_early_aic_mod[top_aic_mod$model]
+  top_models[[i]] <- beh_cond_early_aic_mod[[i]][top_aic_mod$model]
+
+}
+
+top_models <- top_models %>%
+  flatten() %>%
+  keep(~ length(.) > 0)
 
 # save models
 saveRDS(top_models, "./Code_Output/early_cond_surv_sig_models.rds")
@@ -756,7 +744,6 @@ beh_cond_surv_late_mod[[11]][[2]] <- glmmTMB(alive_june1 ~
 
 ```
 
-
 ```{r}
 # AIC table
 ## first, rearrange model list, so that models are in a list per response (survuritient or post-calf present)
@@ -784,31 +771,101 @@ names(beh_cond_late_aic_mod)[[24]] <- "NULL_de"
 ```
 
 ```{r}
-  # Generate AIC table 
-  aic_table <- MuMIn::model.sel(beh_cond_late_aic_mod)
+# now, generate AIC table for each model set - per behavior type & environ conditions (forage quality vs forage quantity)
+grp <- case_when(
+  str_detect(names(beh_cond_late_aic_mod), "biom_herd") & 
+    str_detect(names(beh_cond_late_aic_mod), "centroid|HR") ~ "space_quant",
+  str_detect(names(beh_cond_late_aic_mod), "dn_herd|de_herd") & 
+    str_detect(names(beh_cond_late_aic_mod), "centroid|HR") ~ "space_qual",
+  str_detect(names(beh_cond_late_aic_mod), "biom_herd") & 
+    str_detect(names(beh_cond_late_aic_mod), "move|dist|sinuos") ~ "move_quant",
+  str_detect(names(beh_cond_late_aic_mod), "dn_herd|de_herd") & 
+    str_detect(names(beh_cond_late_aic_mod), "move|dist|sinuos") ~ "move_qual",
+  str_detect(names(beh_cond_late_aic_mod), "biom_herd") & 
+    str_detect(names(beh_cond_late_aic_mod), "avg_biom |avg_de |resource_vol|avg_biom\\^2") ~ "for_quant",
+  str_detect(names(beh_cond_late_aic_mod), "dn_herd|de_herd") & 
+    str_detect(names(beh_cond_late_aic_mod), "avg_biom |avg_de |resource_vol|avg_biom\\^2") ~ "for_qual",
+  TRUE ~ names(beh_cond_late_aic_mod)
+)
+
+beh_cond_late_aic_mod <- split(beh_cond_late_aic_mod, grp)
+null_mods <- beh_cond_late_aic_mod[str_detect(names(beh_cond_late_aic_mod), "NULL")]
+beh_cond_late_aic_mod[str_detect(names(beh_cond_late_aic_mod), "NULL")] <- NULL
+beh_cond_late_aic_mod[str_detect(names(beh_cond_late_aic_mod), "avg_dn")] <- NULL # remove dig nitrogen use behavior from late summer AIC
+
+aic_table <- list()
+
+for(i in 1:length(beh_cond_late_aic_mod)){
+ # Generate AIC table for each group
+  if(str_detect(names(beh_cond_late_aic_mod)[[i]], "quant")){
+    aic_table[[i]] <- MuMIn::model.sel(c(beh_cond_late_aic_mod[[i]],
+                                              null_mods[["NULL_biom"]]))
+    
+      # extract model formula
+      forms <- map_chr(c(beh_cond_late_aic_mod[[i]],
+                          null_mods[["NULL_biom"]]), ~as.character(formula(.x))[[3]])
+      forms <- data.frame(forms = forms, model = names(forms))
   
-# extract model formula
-forms <- map_chr(beh_cond_late_aic_mod, ~as.character(formula(.x))[[3]])
-forms <- data.frame(forms = forms, model = names(beh_cond_late_aic_mod))
+      # Add model names 
+        aic_table[[i]] <- as.data.frame(aic_table[[i]]) %>%
+          tibble::rownames_to_column("model")
   
-# Add model names 
-  aic_df_beh_cond_late <- as.data.frame(aic_table) %>%
-    tibble::rownames_to_column("model")
+      # join with formula
+      aic_table[[i]] <- left_join(aic_table[[i]], forms)
+      
+  }else{
+    aic_table[[i]] <- MuMIn::model.sel(c(beh_cond_late_aic_mod[[i]],
+                                            null_mods[["NULL_de"]]))
+    
+    # extract model formula
+      forms <- map_chr(c(beh_cond_late_aic_mod[[i]],
+                          null_mods[["NULL_de"]]), ~as.character(formula(.x))[[3]])
+      forms <- data.frame(forms = forms, model = names(forms))
   
-  # join with formula
-  aic_df_beh_cond_late <- left_join(aic_df_beh_cond_late, forms)
+      # Add model names 
+        aic_table[[i]] <- as.data.frame(aic_table[[i]]) %>%
+          tibble::rownames_to_column("model")
+  
+      # join with formula
+      aic_table[[i]] <- left_join(aic_table[[i]], forms)
+  }
+}
+  
+aic_df_beh_cond_late <- bind_rows(aic_table)  
 
 ## subset to variables of interest
 aic_df_beh_cond_late <- aic_df_beh_cond_late %>% 
-  select(model, forms, df, logLik, AICc, delta)
+  select(forms, df, logLik, AICc, delta)
 
 ## then, round values
 aic_df_beh_cond_late <- aic_df_beh_cond_late %>%
   mutate(across(where(is.numeric), ~round(.x, 3)))
-```
 
-```{r}
-# output word docx AIC tables
+# make model formulas pretty
+aic_df_beh_cond_late <- aic_df_beh_cond_late %>% 
+  mutate(
+    forms = str_replace_all(forms, "avg_biom_herd", "forage biomass"),
+    forms = str_replace_all(forms, "avg_de_herd", "dig. energy"),
+    forms = str_replace_all(forms, "avg_fly_herd", "fly index"),
+    forms = str_replace_all(forms, "avg_biom", "forage biomass use"),
+    forms = str_replace_all(forms, "resource_vol", "forage use breadth"),
+    forms = str_replace_all(forms, "avg_dn", "dig. nitrogen use"),
+    forms = str_replace_all(forms, "avg_de", "dig. energy use"),
+    forms = str_replace_all(forms, "avg_sinuosity", "daily sinuosity"),
+    forms = str_replace_all(forms, "avg_dist_m", "daily displacement"),
+    forms = str_replace_all(forms, "move_vol", "movement breadth"),
+    forms = str_replace_all(forms, "HR_area_km2", "seasonal range area"),
+    forms = str_replace_all(forms, "centroid_x", "seasonal range longitude"),
+    forms = str_replace_all(forms, "centroid_y", "seasonal range latitude")
+  )
+
+aic_df_beh_cond_late <- aic_df_beh_cond_late %>% mutate(forms = str_remove(forms, "Current_Calf_Present \\+\\ "))
+
+aic_df_beh_cond_late <- aic_df_beh_cond_late %>% 
+  mutate(forms = case_when(forms == "forage biomass + fly index" ~ "forage biomass + fly index (Null model, forage quantity)",
+                           forms == "dig. energy + fly index" ~ "dig. energy + fly index (Null model, forage quality)",
+                           TRUE ~ forms))
+
 # format it as a flextable
 ft <- flextable(aic_df_beh_cond_late)
 
@@ -817,7 +874,7 @@ ft <- autofit(ft)
 
 # create a Word document and add the table
 doc <- read_docx() %>%
-  body_add_par("Late behavior x condition survival AIC", style = "heading 1") %>%
+  body_add_par("late behavior x condition survival AIC", style = "heading 1") %>%
   body_add_flextable(ft)
 
 # save the Word document
@@ -825,18 +882,27 @@ print(doc, target = "./Code_Output/late_behavior_cond_surv_AIC.docx")
 ```
 
 ```{r}
+# save models that are better than NULL for plotting
 # save top models (delta AIC < NULL) for plotting
-   
- delta_null <- aic_df_beh_cond_late %>% 
+top_models <- list()
+
+for(i in 1:length(aic_table)){
+ delta_null <- aic_table[[i]] %>% 
     filter(str_detect(model, "NULL")) %>% 
-    slice_min(delta) %>% 
+  slice_min(delta) %>% 
     select(delta)
   
-  top_aic_mod <- aic_df_beh_cond_late %>% 
+  top_aic_mod <- aic_table[[i]] %>% 
     filter(delta < delta_null$delta)
   
 # pull models
-  top_models <- beh_cond_late_aic_mod[top_aic_mod$model]
+  top_models[[i]] <- beh_cond_late_aic_mod[[i]][top_aic_mod$model]
+
+}
+
+top_models <- top_models %>%
+  flatten() %>%
+  keep(~ length(.) > 0)
 
 # save models
 saveRDS(top_models, "./Code_Output/late_cond_surv_sig_models.rds")

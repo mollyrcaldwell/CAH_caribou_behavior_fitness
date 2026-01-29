@@ -21,109 +21,13 @@ library(performance)
 setwd("~/OneDrive - University of Wyoming/Documents/USGS_AK_Caribou/")
 ```
 
-# Load and prep data
+# Load  data
 2 sets of data and analyses for early summer (1 June - 15 July) and late summer (16 July - 31 August)
 
 ```{r}
-# Early / late summer forage conditions data
-res_cond_early <- readRDS("./Code_Output/early_forage_per_herdUDs.rds")
-res_cond_late <- readRDS("./Code_Output/late_forage_per_herdUDs.rds")
-
-# Early / late summer insect conditions data
-ins_cond_early <- readRDS("./Code_Output/early_insect_per_herdUDs.rds")
-ins_cond_late <- readRDS("./Code_Output/late_insect_per_herdUDs.rds")
-
-# Early / late summer behaviors data
-early_beh <- readRDS("./Code_Output/early_behaviors.rds")
-late_beh <- readRDS("./Code_Output/late_behaviors.rds")
-  
-```
-
-```{r}
-# add year and animal id to behavior data
-early_beh <- early_beh %>% 
-  mutate(yr = as.numeric(str_split_i(animal_yr, "_", 2)),
-         animal_id = str_split_i(animal_yr, "_", 1))
-
-late_beh <- late_beh %>% 
-  mutate(yr = as.numeric(str_split_i(animal_yr, "_", 2)),
-         animal_id = str_split_i(animal_yr, "_", 1))
-
-# combine forage, insect conditions and behavior datasets
-early_beh <- left_join(early_beh, res_cond_early, by = c("yr" = "year"))
-early_beh <- left_join(early_beh, ins_cond_early, by = c("yr" = "year"))
-
-
-late_beh <- left_join(late_beh, res_cond_late, by = c("yr" = "year"))
-late_beh <- left_join(late_beh, ins_cond_late, by = c("yr" = "year"))
-
-```
-
-```{r}
-# scale and center forage and insect conditions
-cond_vars <- c("avg_biom_herd",  "avg_dn_herd",
-                 "avg_de_herd", 
-               "avg_mosq_herd", 
-               "avg_fly_herd")
-
-early_beh <- early_beh %>% 
-  mutate_at(cond_vars[!cond_vars %in% c("avg_fly_herd", "sd_fly_herd")],
-            ~(scale(as.numeric(.), center = T, scale = T) %>% as.vector))
-
-
-late_beh <- late_beh %>% 
-  mutate_at(cond_vars[!cond_vars %in% c("avg_mosq_herd", "sd_mosq_herd")],
-            ~(scale(as.numeric(.), center = T, scale = T) %>% as.vector))
-
-
-```
-
-```{r}
-# early summer
-# check correlation of conditions variables
-rcorr(as.matrix(early_beh %>% 
-                  select(all_of(cond_vars[!cond_vars %in% c("avg_fly_herd",
-                                                            "sd_fly_herd")]))) )
-
-# correlation plot
-early_beh_corr = cor(early_beh %>% 
-                       select(all_of(cond_vars[!cond_vars %in% c("avg_fly_herd",
-                                                                 "sd_fly_herd")])) %>% 
-        rename(forage_biomass = avg_biom_herd,
-               dig_nitrogen = avg_dn_herd,
-               dig_energy = avg_de_herd,
-               mosq_index = avg_mosq_herd))
-corrplot(early_beh_corr, method = 'number') 
-
-
-
-# late summer
-# check correlation of conditions variables
-rcorr(as.matrix(late_beh %>% 
-                  select(all_of(cond_vars[!cond_vars %in% c("avg_mosq_herd",
-                                                            "sd_mosq_herd")]))))
-
-
-
-# correlation plot
-late_beh_corr = cor(late_beh %>% 
-                       select(all_of(cond_vars[!cond_vars %in% c("avg_mosq_herd",
-                                                                 "sd_mosq_herd")])) %>%  
-                     rename(forage_biomass = avg_biom_herd,
-               dig_nitrogen = avg_dn_herd,
-               dig_energy = avg_de_herd,
-               fly_index = avg_fly_herd) )
-corrplot(late_beh_corr, method = 'number') 
-
-
-
-```
-
-```{r}
-# save datasets used in models
-saveRDS(early_beh, "./Code_Output/early_beh_LMM_data.rds")
-
-saveRDS(late_beh, "./Code_Output/late_beh_LMM_data.rds")
+# load behavior and fitness data
+early_beh <- read.csv("./Code_Output/early_behavior_fitness.csv")
+late_beh <- read.csv("./Code_Output/late_behavior_fitness.csv")
 ```
 
 # Early summer linear mixed models
